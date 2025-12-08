@@ -1,0 +1,107 @@
+{
+  "name": "Flight CSV Upload & Analysis",
+  "nodes": [
+    {
+      "id": "WebhookUpload",
+      "name": "Webhook /upload",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [260, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "upload",
+        "responseMode": "onReceived",
+        "options": {
+          "binaryData": true
+        }
+      }
+    },
+    {
+      "id": "CallBackend",
+      "name": "Backend /upload",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [520, 300],
+      "parameters": {
+        "requestMethod": "POST",
+        "url": "http://backend:8000/upload",
+        "jsonParameters": false,
+        "sendBinaryData": true,
+        "binaryPropertyName": "data",
+        "options": {
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "StoreInDB",
+      "name": "Store Result (Postgres)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [780, 220],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO flight_results (distance_nm, fuel_kg, mass_kg, co2_kg, created_at)\nVALUES ({{ $json[\"distance_nm\"] }}, {{ $json[\"fuel_kg\"] }}, {{ $json[\"mass_kg\"] }}, {{ $json[\"co2_kg\"] }}, NOW());"
+      },
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Postgres (configure in UI)"
+        }
+      }
+    },
+    {
+      "id": "SendEmail",
+      "name": "Send Result Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [780, 380],
+      "parameters": {
+        "fromEmail": "",
+        "toEmail": "your-email@example.com",
+        "subject": "Flight CSV analysis result",
+        "text": "Flight analysis summary:\\n\\nDistance: {{$json[\"distance_nm\"]}} NM\\nFuel: {{$json[\"fuel_kg\"]}} kg\\nMass: {{$json[\"mass_kg\"]}} kg\\nCO2: {{$json[\"co2_kg\"]}} kg"
+      },
+      "credentials": {
+        "smtp": {
+          "id": "",
+          "name": "SMTP (configure in UI)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook /upload": {
+      "main": [
+        [
+          {
+            "node": "Backend /upload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Backend /upload": {
+      "main": [
+        [
+          {
+            "node": "Store Result (Postgres)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Result Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {},
+  "versionId": "flight-upload-v1"
+}
+
+

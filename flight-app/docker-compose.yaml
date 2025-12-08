@@ -1,0 +1,38 @@
+version: "3.8"
+
+services:
+  backend:
+    build: ./backend
+    container_name: flight-backend
+    ports:
+      - "8000:8000"
+    networks:
+      - flight-net
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: flight-n8n
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=false
+      - N8N_HOST=n8n
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - NODE_ENV=production
+      - GENERIC_TIMEZONE=UTC
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n:/home/node/n8n-local
+    networks:
+      - flight-net
+
+networks:
+  flight-net:
+    driver: bridge
+
+volumes:
+  n8n_data:
+    driver: local
+
+

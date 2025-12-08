@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+pandas
+numpy
+python-multipart
+starlette
+streamlit
+xarray
+cdsapi
+
+
