@@ -6,12 +6,16 @@
         "CTc4": 9.6177,
         "CTc5": 0.0085132,
         "CTcr": 0.95,
-        "Cf1": 146590,
-        "Cf2": 53872,
-        "Cf3": 0,
-        "Cf4": 9.6177,
-        "Cf5": 0.0085132,
-        "Cfcr": 0.29,
+        "CTdes_low": 0.0552,
+        "CTdes_high": 0.0746,
+        "Hp_des": 15000,
+        "CTdes_app": 0.15,
+        "CTdes_Id": 0.29,
+        "Cf1": 0.70057,
+        "Cf2": 1068.1,
+        "Cf3": 11.031,
+        "Cf4": 54252,
+        "Cfcr": 0.93,
         "CR": {
             "config": "clean",
             "CD0": 0.0235,
@@ -19,37 +23,113 @@
             "CD0,deltaLDG":  0.0
         },
         "IC": {
-            "config": "flap01",
-            "CD0": 0.0235,
-            "CD2": 0.0445,
+            "config": "1",
+            "CD0": 0.027,
+            "CD2": 0.0441,
             "CD0,deltaLDG":  0.0
         },
         "TO": {
-            "config": "flap05",
-            "CD0": 0.0235,
-            "CD2": 0.0445,
+            "config": "1+f",
+            "CD0": 0.0333,
+            "CD2": 0.0428,
             "CD0,deltaLDG":  0.0
         },
         "AP": {
-            "config": "flap15",
-            "CD0": 0.0235,
-            "CD2": 0.0445,
+            "config": "2",
+            "CD0": 0.0477,
+            "CD2": 0.0423,
             "CD0,deltaLDG":  0.0
         },
         "LD": {
-            "config": "clean",
-            "CD0": 0.0235,
-            "CD2": 0.0445,
-            "CD0,deltaLDG":  0.0
+            "config": "full",
+            "CD0": 0.0653,
+            "CD2": 0.0412,
+            "CD0,deltaLDG":  0.0235
         },
         "cruise": {
             "K": 0.044,
             "e": 0.775,
             "flap_angle": 0.0
-        }
-    }
-    
-    "320": {
+        },
+        "initial_climb": {
+            "K": 0.041,
+            "e": 0.827,
+            "flap_angle": 20
+        },
+        "landing": {
+            "K": 0.037,
+            "e": 0.905,
+            "flap_angle": 50
+        },
+        "mew": 0.02,
+        "wing_area_clean": 124.65,
+        "wing_area_flap": 143.04
+    },
 
+    "320": {
+        "CTc1": 141040,
+        "CTc2": 48917,
+        "CTc3": 0,
+        "CTc4": 9.9797,
+        "CTc5": 0.0080268,
+        "CTcr": 0.95,
+        "CTdes_low": 0.027007,
+        "CTdes_high": 0.045711,
+        "Hp_des": 12398,
+        "CTdes_app": 0.13981,
+        "CTdes_Id": 0.3475,
+        "Cf1": 0.6333,
+        "Cf2": 859.03,
+        "Cf3": 9.134,
+        "Cf4": 79668,
+        "Cfcr": 0.95423,
+        "CR": {
+            "config": "clean",
+            "CD0": 0.025149,
+            "CD2": 0.036138,
+            "CD0,deltaLDG":  0.0
+        },
+        "IC": {
+            "config": "1",
+            "CD0": 0.0242,
+            "CD2": 0.0469,
+            "CD0,deltaLDG":  0.0
+        },
+        "TO": {
+            "config": "1+f",
+            "CD0": 0.0393,
+            "CD2": 0.0396,
+            "CD0,deltaLDG":  0.0
+        },
+        "AP": {
+            "config": "2",
+            "CD0": 0.0456,
+            "CD2": 0.0381,
+            "CD0,deltaLDG":  0.0
+        },
+        "LD": {
+            "config": "full",
+            "CD0": 0.0838,
+            "CD2": 0.0371,
+            "CD0,deltaLDG":  0.0312
+        },
+        "cruise": {
+            "K": 0.039,
+            "e": 0.798,
+            "flap_angle": 0.0
+        },
+        "initial_climb": {
+            "K": 0.036,
+            "e": 0.850,
+            "flap_angle": 20
+        },
+        "landing": {
+            "K": 0.024,
+            "e": 0.602,
+            "flap_angle": 40
+        },
+        "mew": 0.02,
+        "wing_area_clean": 122.6,
+        "wing_area_flap": 143.4420
     }
 }
