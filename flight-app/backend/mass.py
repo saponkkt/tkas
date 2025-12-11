@@ -16,5 +16,11 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
     # ผลต่างเวลาระหว่างแถว (วินาที) แถวแรกเป็น 0
     delta_seconds = dt.diff().dt.total_seconds().fillna(0).astype(int)
     df_out["delta_t (s)"] = delta_seconds
+
+    # ผลรวมสะสมของผลต่างเวลา (วินาที) แถวแรกเริ่มที่ 0
+    df_out["sum_t (s)"] = delta_seconds.cumsum().astype(int)
+
+    # แปลงผลรวมสะสมเป็นหน่วยนาที (ทศนิยมได้) ทุกแถว
+    df_out["sum_t (min)"] = df_out["sum_t (s)"] / 60
     return df_out
 
