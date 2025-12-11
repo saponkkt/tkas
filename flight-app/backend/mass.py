@@ -34,15 +34,12 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
     alt_col = "altitude"
     alt_m = pd.to_numeric(df_out.get(alt_col), errors="coerce") * 0.3048
 
-    t0 = None
-    # ถ้า calc.py คำนวณ T0 ไว้แล้ว ให้เตรียมเป็นคอลัมน์ T0 หรือ sea_level_temp_K
-    if "T0" in df_out:
-        t0 = pd.to_numeric(df_out["T0"], errors="coerce").iloc[0]
-    elif "sea_level_temp_K" in df_out:
-        t0 = pd.to_numeric(df_out["sea_level_temp_K"], errors="coerce").iloc[0]
-    elif "temperature_K" in df_out:
-        # ผู้ใช้ระบุว่า T0 อยู่บรรทัดแรกของคอลัมน์อุณหภูมิ
-        t0 = pd.to_numeric(df_out["temperature_K"], errors="coerce").iloc[0]
+    # ใช้ T0 จากบรรทัดแรกของคอลัมน์ temperature_K เท่านั้น
+    t0 = (
+        pd.to_numeric(df_out["temperature_K"], errors="coerce").iloc[0]
+        if "temperature_K" in df_out
+        else None
+    )
 
     if t0 is not None and not math.isnan(t0):
         exponent = (g * M) / (R * L)
