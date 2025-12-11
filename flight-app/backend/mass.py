@@ -24,27 +24,18 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
     # แปลงผลรวมสะสมเป็นหน่วยนาที (ทศนิยมได้) ทุกแถว
     df_out["sum_t (min)"] = df_out["sum_t (s)"] / 60
 
-    # ความดันบรรยากาศ (Pa) ด้วยสูตรบาโรเมตริก ใช้ T0 จาก calc.py ถ้ามี
+    # ความดันบรรยากาศ (Pa) ด้วยสูตรบาโรเมตริก ใช้ T0 คงที่ (ISA)
     P0 = 101325  # Pa
     L = 0.0065  # K/m
     M = 0.0289652  # kg/mol
     g = 9.80665  # m/s^2
     R = 8.31446  # J/(mol·K)
+    t0 = 288.15 # K
 
     alt_col = "altitude"
     alt_m = pd.to_numeric(df_out.get(alt_col), errors="coerce") * 0.3048
 
-    # ใช้ T0 จากบรรทัดแรกของคอลัมน์ temperature_K เท่านั้น
-    t0 = (
-        pd.to_numeric(df_out["temperature_K"], errors="coerce").iloc[0]
-        if "temperature_K" in df_out
-        else None
-    )
-
-    if t0 is not None and not math.isnan(t0):
-        exponent = (g * M) / (R * L)
-        df_out["Pressure_Pa"] = P0 * (1 - (L * alt_m) / t0) ** exponent
-    else:
-        df_out["Pressure_Pa"] = pd.NA
+    exponent = (g * M) / (R * L)
+    df_out["Pressure_Pa"] = P0 * (1 - (L * alt_m) / t0) ** exponent
     return df_out
 
