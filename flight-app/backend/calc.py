@@ -174,3 +174,84 @@ def compute_tas_for_dataframe(df: pd.DataFrame, ds, source_type: str) -> pd.Data
     df_out["TAS_kt"] = tas_list
     df_out["Wind_Speed_kt"] = ws_list
     return df_out
+
+
+# ============================================================================
+# Temperature helpers (ERA5 + barometric lapse rate)
+# ============================================================================
+
+
+def _find_temperature_variable(ds):
+    """Return the first plausible temperature variable name in an ERA5 dataset."""
+    preferred = ["t2m", "t", "temperature"]
+    for name in preferred:
+        if name in ds.variables:
+            return name
+    return next((v for v in ds.variables if "temp" in v.lower()), None)
+
+
+def sample_temperature_era5(ds, lat: float, lon: float, t_unix: float) -> float:
+    """
+    ดึงอุณหภูมิ (K) ที่ระดับน้ำทะเลจาก ERA5 ตามตำแหน่ง/เวลา
+    ใช้แค่แถวแรกของไฟล์ ADS-B (sea-level assumption)
+    """
+    t_dt = pd.to_datetime(t_unix, unit="s", utc=True)
+    sel_time = ds.sel(time=t_dt, method="nearest")
+
+    lon_era = ((lon + 180) % 360) - 180
+    temp_var = _find_temperature_variable(ds)
+    if temp_var is None:
+        return np.nan
+
+    try:
+        # ถ้ามีมิติระดับความกด เลือก 0 ft -> ~1013 hPa
+        if any(dim in ds[temp_var].dims for dim in ["level", "pressure_level", "isobaricInhPa"]):
+            lev_n = next(
+                (d for d in ds[temp_var].dims if d in ["level", "pressure_level", "isobaricInhPa"]),
+                None,
+            )
+            p0 = pressure_hPa_from_alt_ft(0.0)
+            point_t = sel_time[temp_var].sel(
+                {lev_n: p0, "latitude": lat, "longitude": lon_era}, method="nearest"
+            )
+        else:
+            lat_n = "latitude" if "latitude" in ds[temp_var].dims else "lat"
+            lon_n = "longitude" if "longitude" in ds[temp_var].dims else "lon"
+            point_t = sel_time[temp_var].sel({lat_n: lat, lon_n: lon_era}, method="nearest")
+
+        return float(point_t.values)
+    except Exception:
+        return np.nan
+
+
+def compute_temperature_profile_from_adsb_csv(
+    file_obj: Union[BinaryIO, IOBase], era5_ds
+) -> pd.DataFrame:
+    """
+    อ่านไฟล์ ADS-B (.csv) แล้วคำนวณอุณหภูมิแต่ละแถว
+
+    - ใช้ ERA5 หา T0 ที่ระดับน้ำทะเลจาก "บรรทัดแรก" ของไฟล์
+    - แถวถัดไปใช้อสมการ lapse rate: T = T0 - (L * h)
+      L = 0.0065 K/m, h จาก altitude (ft -> m)
+    """
+    df = pd.read_csv(file_obj)
+    df = _ensure_required_columns(df)
+
+    if df.empty:
+        return df.assign(temperature_K=np.nan)
+
+    first_ts = df.loc[0, "timestamp"]
+    t_unix = pd.Timestamp(first_ts).timestamp()
+    t0 = sample_temperature_era5(
+        era5_ds, float(df.loc[0, "lat"]), float(df.loc[0, "lon"]), t_unix
+    )
+
+    if np.isnan(t0):
+        # ถ้าอ่าน ERA5 ไม่ได้ ให้คืนคอลัมน์ว่างเพื่อไม่หยุดการทำงาน
+        return df.assign(temperature_K=np.nan)
+
+    L = 0.0065  # K/m
+    alt_m = df["altitude"].astype(float) * 0.3048
+    df_out = df.copy()
+    df_out["temperature_K"] = t0 - (L * alt_m)
+    return df_out
