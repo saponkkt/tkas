@@ -11,6 +11,10 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
     """
     df_out = df.copy()
     dt = pd.to_datetime(df_out[utc_col], utc=True, errors="coerce")
-    df_out[f"{utc_col}_time"] = dt.dt.strftime("%H:%M:%S")
+    df_out["time"] = dt.dt.strftime("%H:%M:%S")
+    
+    # ผลต่างเวลาระหว่างแถว (วินาที) แถวแรกเป็น 0
+    delta_seconds = dt.diff().dt.total_seconds().fillna(0).astype(int)
+    df_out["delta_t (s)"] = delta_seconds
     return df_out
 
