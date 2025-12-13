@@ -54,5 +54,15 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
     delta_t = df_out["delta_t (s)"].replace(0, pd.NA)  # แทนที่ 0 ด้วย NA เพื่อหลีกเลี่ยงการหารด้วยศูนย์
     df_out["a_m/s^2"] = delta_tas / delta_t
     
+    # คำนวณความหนาแน่นอากาศ Density = Pressure_Pa / (R * temperature_K)
+    # R = 287.05 J/(kg·K) (gas constant สำหรับอากาศ)
+    R_air = 287.05  # J/(kg·K)
+    if "temperature_K" in df_out.columns:
+        temperature_K = pd.to_numeric(df_out["temperature_K"], errors="coerce")
+        df_out["Density"] = df_out["Pressure_Pa"] / (R_air * temperature_K)
+    else:
+        # ถ้าไม่มีคอลัมน์ temperature_K ให้สร้างคอลัมน์ว่าง
+        df_out["Density"] = pd.NA
+    
     return df_out
 
