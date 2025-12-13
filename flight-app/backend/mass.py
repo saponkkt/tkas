@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import numpy as np
 import pandas as pd
 
 # แยกเวลา จากคอลัมน์ UTC column N
@@ -37,5 +38,14 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
 
     exponent = (g * M) / (R * L)
     df_out["Pressure_Pa"] = P0 * (1 - (L * alt_m) / t0) ** exponent
+    
+    # แปลง TAS จาก knots เป็น m/s (คูณด้วย 0.5144)
+    # ตรวจสอบทั้งคอลัมน์ TAS และ TAS_kt
+    if "TAS_kt" in df_out.columns:
+        df_out["TAS_m/s"] = pd.to_numeric(df_out["TAS_kt"], errors="coerce") * 0.5144
+    else:
+        # ถ้าไม่มีคอลัมน์ TAS ให้สร้างคอลัมน์ว่าง
+        df_out["TAS_m/s"] = pd.NA
+    
     return df_out
 
