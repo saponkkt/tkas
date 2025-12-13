@@ -6,6 +6,7 @@ const BACKEND_URL =
 
 export default function UploadForm({ onResults, onPath }) {
   const [file, setFile] = useState(null);
+  const [aircraftType, setAircraftType] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -37,11 +38,16 @@ export default function UploadForm({ onResults, onPath }) {
       setError("กรุณาเลือกไฟล์ CSV ก่อน");
       return;
     }
+    if (!aircraftType) {
+      setError("กรุณาเลือกประเภทเครื่องบิน");
+      return;
+    }
     setLoading(true);
     setError("");
     try {
       const formData = new FormData();
       formData.append("file", file);
+      formData.append("aircraft_type", aircraftType);
 
       const res = await fetch(`${BACKEND_URL}/upload`, {
         method: "POST",
@@ -85,6 +91,21 @@ export default function UploadForm({ onResults, onPath }) {
           ต้องมีคอลัมน์: <code>lat</code>, <code>lon</code>,{" "}
           <code>altitude</code>, <code>timestamp</code>
         </p>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-slate-200">
+          ประเภทเครื่องบิน <span className="text-rose-400">*</span>
+        </label>
+        <select
+          value={aircraftType}
+          onChange={(e) => setAircraftType(e.target.value)}
+          className="mt-2 w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+        >
+          <option value="">-- เลือกประเภทเครื่องบิน --</option>
+          <option value="737">Boeing 737</option>
+          <option value="320">Airbus A320</option>
+        </select>
       </div>
 
       {error && (

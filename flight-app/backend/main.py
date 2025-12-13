@@ -1,6 +1,7 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
+from typing import Optional
 
 from calc import compute_flight_metrics_from_csv
 
@@ -16,10 +17,15 @@ app.add_middleware(
 
 
 @app.post("/upload")
-async def upload_csv(file: UploadFile = File(...)):
+async def upload_csv(
+    file: UploadFile = File(...),
+    aircraft_type: Optional[str] = Form(None)
+):
     """
     Accept a CSV file with columns: lat, lon, altitude, timestamp
     and return distance, fuel, mass, and CO2 metrics.
+    
+    Optional parameter: aircraft_type (e.g., "737", "320")
     """
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only CSV files are supported.")
@@ -27,6 +33,10 @@ async def upload_csv(file: UploadFile = File(...)):
     try:
         # UploadFile.file is a SpooledTemporaryFile (file-like)
         metrics = compute_flight_metrics_from_csv(file.file)
+        
+        # Add aircraft_type to response if provided
+        if aircraft_type:
+            metrics["aircraft_type"] = aircraft_type
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover - generic safety net
