@@ -138,17 +138,32 @@ def compute_tas_for_dataframe(df: pd.DataFrame, ds, source_type: str) -> pd.Data
     """
     Service function:
     รับ DataFrame ที่เตรียมแล้ว + dataset ลม (ds) + source_type (GFS / ERA5)
-    คืน DataFrame เดิมที่เพิ่มคอลัมน์ TAS_kt และ Wind_Speed_kt
+    คืน DataFrame เดิมที่เพิ่มคอลัมน์ TAS_kt, wind_u_kt, wind_v_kt, wind_speed_kt, wind_direction_deg
+    ใช้วิธีการคำนวณเหมือน multi_tas.py
     """
-    tas_list, ws_list = [], []
+    tas_list = []
+    u_list, v_list = [], []
+    wind_speed_list = []
+    wind_direction_list = []
 
     for _, row in df.iterrows():
         try:
             gs = float(row["ground_speed"])
-            trk = float(row["track"])
-            theta = math.radians(trk)
+            trk_deg = float(row["track"])
+            
+            if not np.isfinite(gs) or not np.isfinite(trk_deg):
+                tas_list.append(np.nan)
+                u_list.append(np.nan)
+                v_list.append(np.nan)
+                wind_speed_list.append(np.nan)
+                wind_direction_list.append(np.nan)
+                continue
 
-            u, v = sample_wind(
+            theta = math.radians(trk_deg)
+            gs_north = gs * math.cos(theta)
+            gs_east = gs * math.sin(theta)
+
+            u_kt, v_kt = sample_wind(
                 ds,
                 source_type,
                 row["latitude"],
@@ -157,22 +172,40 @@ def compute_tas_for_dataframe(df: pd.DataFrame, ds, source_type: str) -> pd.Data
                 row["time"],
             )
 
-            if np.isnan(u):
+            if np.isnan(u_kt) or np.isnan(v_kt):
                 tas_list.append(np.nan)
-                ws_list.append(np.nan)
+                u_list.append(np.nan)
+                v_list.append(np.nan)
+                wind_speed_list.append(np.nan)
+                wind_direction_list.append(np.nan)
             else:
-                gs_n = gs * math.cos(theta)
-                gs_e = gs * math.sin(theta)
-                tas = math.hypot(gs_e - u, gs_n - v)
+                # คำนวณความเร็วและทิศทางลม
+                wind_speed = math.hypot(u_kt, v_kt)
+                wind_direction = (math.degrees(math.atan2(u_kt, v_kt)) + 360) % 360
+                
+                # TAS = GS - Wind
+                tas_east = gs_east - u_kt
+                tas_north = gs_north - v_kt
+                tas = math.hypot(tas_east, tas_north)
+
                 tas_list.append(tas)
-                ws_list.append(math.hypot(u, v))
-        except Exception:
+                u_list.append(u_kt)
+                v_list.append(v_kt)
+                wind_speed_list.append(wind_speed)
+                wind_direction_list.append(wind_direction)
+        except Exception as e:
             tas_list.append(np.nan)
-            ws_list.append(np.nan)
+            u_list.append(np.nan)
+            v_list.append(np.nan)
+            wind_speed_list.append(np.nan)
+            wind_direction_list.append(np.nan)
 
     df_out = df.copy()
+    df_out["wind_u_kt"] = u_list
+    df_out["wind_v_kt"] = v_list
+    df_out["wind_speed_kt"] = wind_speed_list
+    df_out["wind_direction_deg"] = wind_direction_list
     df_out["TAS_kt"] = tas_list
-    df_out["Wind_Speed_kt"] = ws_list
     return df_out
 
 
