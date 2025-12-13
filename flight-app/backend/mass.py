@@ -47,5 +47,12 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
         # ถ้าไม่มีคอลัมน์ TAS ให้สร้างคอลัมน์ว่าง
         df_out["TAS_m/s"] = pd.NA
     
+    # คำนวณความเร่ง a_m/s^2 = ΔTAS_m/s / Δt
+    # ผลต่างของ TAS_m/s ระหว่างแถวถัดไปกับแถวก่อนหน้า
+    delta_tas = df_out["TAS_m/s"].diff()
+    # หารด้วย delta_t (s) แต่ต้องระวังการหารด้วยศูนย์
+    delta_t = df_out["delta_t (s)"].replace(0, pd.NA)  # แทนที่ 0 ด้วย NA เพื่อหลีกเลี่ยงการหารด้วยศูนย์
+    df_out["a_m/s^2"] = delta_tas / delta_t
+    
     return df_out
 
