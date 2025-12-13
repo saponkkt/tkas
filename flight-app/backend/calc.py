@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import os
 from io import IOBase
-from typing import BinaryIO, Dict, Union
+from typing import BinaryIO, Dict, Optional, Union
 
 import math
 
 import numpy as np
 import pandas as pd
+import xarray as xr
 
 from haversine import haversine_nm
 
@@ -79,6 +81,10 @@ def compute_flight_metrics_from_csv(
 # Services สำหรับ TAS calculator (ย้าย logic ออกจาก multi_tas.py)
 # ============================================================================
 
+# ---------- CDS API Configuration ----------
+CDS_API_URL = "https://cds.climate.copernicus.eu/api"
+CDS_API_KEY = "21caa6d2-f9de-487f-af9a-1fa8337e7138"
+
 
 def pressure_hPa_from_alt_ft(alt_ft: float) -> float:
     """แปลงความสูง (ft) -> ความดัน (hPa)"""
@@ -132,6 +138,152 @@ def sample_wind(ds, source_type: str, lat: float, lon: float, alt_ft: float, t_u
     except Exception:
         pass
     return u_kt, v_kt
+
+
+def download_era5_pressure_levels(
+    flight_date: pd.Timestamp,
+    output_path: Optional[str] = None,
+    cds_url: Optional[str] = None,
+    cds_key: Optional[str] = None,
+) -> xr.Dataset:
+    """
+    ดาวน์โหลด ERA5 pressure-level data (u, v components) สำหรับวันที่กำหนด
+    
+    Args:
+        flight_date: วันที่ของเที่ยวบิน (pandas Timestamp)
+        output_path: path สำหรับบันทึกไฟล์ .nc (ถ้า None จะใช้ชื่ออัตโนมัติ)
+        cds_url: CDS API URL (ถ้า None จะใช้ค่าจาก CDS_API_URL)
+        cds_key: CDS API Key (ถ้า None จะใช้ค่าจาก CDS_API_KEY)
+    
+    Returns:
+        xarray Dataset ของ ERA5 pressure levels
+    """
+    try:
+        import cdsapi
+    except ImportError:
+        raise ImportError("cdsapi package is required. Install with: pip install cdsapi")
+
+    if output_path is None:
+        output_path = f"era5_pressure_{flight_date.strftime('%Y%m%d')}.nc"
+    
+    cds_url = cds_url or CDS_API_URL
+    cds_key = cds_key or CDS_API_KEY
+    
+    # สร้าง CDS client ด้วย API key
+    c = cdsapi.Client(url=cds_url, key=cds_key)
+    
+    # ถ้ามีไฟล์อยู่แล้วให้เปิดใช้เลย
+    if os.path.exists(output_path):
+        ds = xr.open_dataset(output_path)
+        # ตรวจสอบและใช้ dimension ที่ถูกต้องสำหรับ ERA5
+        if 'valid_time' in ds.dims and 'time' not in ds.dims:
+            ds = ds.rename({'valid_time': 'time'})
+        # แปลงเวลาใน dataset ให้เป็น timezone-aware UTC
+        if 'time' in ds.coords and not hasattr(ds.time.dtype, 'tz'):
+            ds['time'] = pd.to_datetime(ds['time'].values).tz_localize('UTC')
+        return ds
+    
+    # ดาวน์โหลดข้อมูล
+    c.retrieve(
+        "reanalysis-era5-pressure-levels",
+        {
+            "product_type": "reanalysis",
+            "variable": ["u_component_of_wind", "v_component_of_wind"],
+            "pressure_level": [
+                "100", "150", "200", "250", "300", "400", "500", "600", "700",
+                "800", "850", "900", "925", "950", "975", "1000", "1013"
+            ],
+            "year": str(flight_date.year),
+            "month": f"{flight_date.month:02d}",
+            "day": f"{flight_date.day:02d}",
+            "time": [f"{h:02d}:00" for h in range(24)],
+            "format": "netcdf",
+        },
+        output_path,
+    )
+    
+    ds = xr.open_dataset(output_path)
+    
+    # ตรวจสอบและใช้ dimension ที่ถูกต้องสำหรับ ERA5
+    if 'valid_time' in ds.dims and 'time' not in ds.dims:
+        ds = ds.rename({'valid_time': 'time'})
+    
+    # แปลงเวลาใน dataset ให้เป็น timezone-aware UTC
+    if 'time' in ds.coords and not hasattr(ds.time.dtype, 'tz'):
+        ds['time'] = pd.to_datetime(ds['time'].values).tz_localize('UTC')
+    
+    return ds
+
+
+def download_era5_single_level(
+    flight_date: pd.Timestamp,
+    output_path: Optional[str] = None,
+    cds_url: Optional[str] = None,
+    cds_key: Optional[str] = None,
+) -> xr.Dataset:
+    """
+    ดาวน์โหลด ERA5 single-level data (u10, v10) สำหรับวันที่กำหนด
+    
+    Args:
+        flight_date: วันที่ของเที่ยวบิน (pandas Timestamp)
+        output_path: path สำหรับบันทึกไฟล์ .nc (ถ้า None จะใช้ชื่ออัตโนมัติ)
+        cds_url: CDS API URL (ถ้า None จะใช้ค่าจาก CDS_API_URL)
+        cds_key: CDS API Key (ถ้า None จะใช้ค่าจาก CDS_API_KEY)
+    
+    Returns:
+        xarray Dataset ของ ERA5 single levels
+    """
+    try:
+        import cdsapi
+    except ImportError:
+        raise ImportError("cdsapi package is required. Install with: pip install cdsapi")
+
+    if output_path is None:
+        output_path = f"era5_single_level_{flight_date.strftime('%Y%m%d')}.nc"
+    
+    cds_url = cds_url or CDS_API_URL
+    cds_key = cds_key or CDS_API_KEY
+    
+    # สร้าง CDS client ด้วย API key
+    c = cdsapi.Client(url=cds_url, key=cds_key)
+    
+    # ถ้ามีไฟล์อยู่แล้วให้เปิดใช้เลย
+    if os.path.exists(output_path):
+        ds = xr.open_dataset(output_path)
+        # ตรวจสอบและใช้ dimension ที่ถูกต้องสำหรับ ERA5
+        if 'valid_time' in ds.dims and 'time' not in ds.dims:
+            ds = ds.rename({'valid_time': 'time'})
+        # แปลงเวลาใน dataset ให้เป็น timezone-aware UTC
+        if 'time' in ds.coords and not hasattr(ds.time.dtype, 'tz'):
+            ds['time'] = pd.to_datetime(ds['time'].values).tz_localize('UTC')
+        return ds
+    
+    # ดาวน์โหลดข้อมูล
+    c.retrieve(
+        "reanalysis-era5-single-levels",
+        {
+            "product_type": "reanalysis",
+            "variable": ["10m_u_component_of_wind", "10m_v_component_of_wind"],
+            "year": str(flight_date.year),
+            "month": f"{flight_date.month:02d}",
+            "day": f"{flight_date.day:02d}",
+            "time": [f"{h:02d}:00" for h in range(24)],
+            "format": "netcdf",
+        },
+        output_path,
+    )
+    
+    ds = xr.open_dataset(output_path)
+    
+    # ตรวจสอบและใช้ dimension ที่ถูกต้องสำหรับ ERA5
+    if 'valid_time' in ds.dims and 'time' not in ds.dims:
+        ds = ds.rename({'valid_time': 'time'})
+    
+    # แปลงเวลาใน dataset ให้เป็น timezone-aware UTC
+    if 'time' in ds.coords and not hasattr(ds.time.dtype, 'tz'):
+        ds['time'] = pd.to_datetime(ds['time'].values).tz_localize('UTC')
+    
+    return ds
 
 
 def compute_tas_for_dataframe(df: pd.DataFrame, ds, source_type: str) -> pd.DataFrame:
