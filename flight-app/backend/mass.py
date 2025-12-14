@@ -366,6 +366,12 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
         delta_t_safe = df_out["delta_t (s)"].replace(0, pd.NA)
         df_out["ROCD_m/s"] = (alt_diff_ft * 0.3048) / delta_t_safe
         df_out["ROCD_m/s"] = df_out["ROCD_m/s"].replace([np.inf, -np.inf], pd.NA)
+        # ensure first row is 0 (rate from previous nonexistent row)
+        if len(df_out) > 0:
+            try:
+                df_out.at[df_out.index[0], "ROCD_m/s"] = 0.0
+            except Exception:
+                pass
     except Exception:
         df_out["ROCD_m/s"] = pd.NA
 
