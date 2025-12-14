@@ -77,7 +77,8 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
     cruise_end_idx = None
     if cruise_altitude is not None:
         # หาช่วงที่ altitude ใกล้เคียงกับ cruise_altitude
-        altitude_rounded = (altitude / 100).round() * 100
+        # ใช้การปัดลง (floor) แทนการปัดปกติ เพื่อหลีกเลี่ยงการปัดค่าที่ขึ้นมาเป็นค่า cruise
+        altitude_rounded = np.floor(altitude / 100) * 100
         cruise_rounded = round(cruise_altitude / 100) * 100
         
         in_cruise = False
@@ -106,13 +107,18 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
                 window_start = max(0, i - 5)
                 window_end = min(len(track_stability), i + 6)
                 window_stability = track_stability.iloc[window_start:window_end].mean()
-                
-                if window_stability < 0.6:
-                    # track ไม่คงที่ -> Taxi_out
-                    phases.iloc[i] = "Taxi_out"
-                else:
-                    # track คงที่ -> Takeoff
+
+                # ถ้ามี Takeoff หรือ Initial_climb เกิดขึ้นก่อนหน้านี้
+                # อย่าเปลี่ยนกลับไปเป็น Taxi_out อีก (เครื่องบินไม่สามารถกลับมา Taxi_out หลังเริ่ม Takeoff)
+                if i > 0 and any(p in ["Takeoff", "Initial_climb"] for p in phases.iloc[:i].values):
                     phases.iloc[i] = "Takeoff"
+                else:
+                    if window_stability < 0.6:
+                        # track ไม่คงที่ -> Taxi_out
+                        phases.iloc[i] = "Taxi_out"
+                    else:
+                        # track คงที่ -> Takeoff
+                        phases.iloc[i] = "Takeoff"
             elif i > last_flying_idx:
                 # หลังบินลง: Landing หรือ Taxi_in
                 # ตรวจสอบ track stability ใน window ข้างๆ
@@ -155,11 +161,11 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
             is_cruise = False
             if cruise_start_idx is not None and cruise_end_idx is not None:
                 if cruise_start_idx <= i <= cruise_end_idx:
-                    # ตรวจสอบว่า altitude ใกล้เคียงกับ cruise_altitude
-                    altitude_rounded = round(alt / 100) * 100
-                    cruise_rounded = round(cruise_altitude / 100) * 100
-                    if abs(altitude_rounded - cruise_rounded) <= 50:
-                        is_cruise = True
+                        # ตรวจสอบว่า altitude ใกล้เคียงกับ cruise_altitude (ใช้การปัดลงแบบเดียวกับการหาช่วง)
+                        altitude_rounded = np.floor(alt / 100) * 100
+                        cruise_rounded = np.floor(cruise_altitude / 100) * 100
+                        if abs(altitude_rounded - cruise_rounded) <= 50:
+                            is_cruise = True
             
             if is_cruise:
                 phases.iloc[i] = "Cruise"
@@ -203,7 +209,7 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
                 phases.iloc[i] = "Unknown"
     
     # 6. ปรับปรุง phases ให้ต่อเนื่องและสมเหตุสมผล
-    phases = _refine_flight_phases(phases, altitude, cruise_altitude)
+    phases = _refine_flight_phases(phases, altitude, cruise_altitude, cruise_start_idx, cruise_end_idx)
     
     df_out["flight_phase"] = phases
     return df_out
@@ -225,7 +231,8 @@ def _detect_cruise_altitude(altitude: pd.Series, min_stable_rows: int = 30, tole
         return None
     
     # ปัดเศษ altitude เพื่อหาค่าที่ซ้ำกัน (ปัดเป็น 100 ft)
-    altitude_rounded = (altitude / 100).round() * 100
+    # ใช้การปัดลง (floor) เพื่อหลีกเลี่ยงการปัดขึ้นที่ทำให้ค่าใกล้เคียงกับ cruise ถูกนับผิด
+    altitude_rounded = np.floor(altitude / 100) * 100
     
     # หาช่วงที่ altitude ซ้ำต่อเนื่องกัน
     best_cruise_alt = None
@@ -310,7 +317,7 @@ def _calculate_track_stability(track: pd.Series, window_size: int = 10) -> pd.Se
     return stability
 
 
-def _refine_flight_phases(phases: pd.Series, altitude: pd.Series, cruise_altitude: Optional[float]) -> pd.Series:
+def _refine_flight_phases(phases: pd.Series, altitude: pd.Series, cruise_altitude: Optional[float], cruise_start_idx: Optional[int] = None, cruise_end_idx: Optional[int] = None) -> pd.Series:
     """
     ปรับปรุง flight phases ให้ต่อเนื่องและสมเหตุสมผล
     
@@ -351,8 +358,9 @@ def _refine_flight_phases(phases: pd.Series, altitude: pd.Series, cruise_altitud
             alt = altitude.iloc[i]
             if refined.iloc[i] == "Climb" and abs(alt - cruise_altitude) <= 50:
                 # ถ้าใกล้ cruise altitude มาก ให้เปลี่ยนเป็น Cruise
-                # แต่ต้องตรวจสอบว่ายังไม่เคยถึง Cruise
-                if i > 0 and "Cruise" not in refined.iloc[:i].values:
+                # แต่แค่เปลี่ยนถ้าอยู่ในช่วง cruise ที่ตรวจพบแล้ว (i >= cruise_start_idx)
+                # หรือถ้ามี Cruise ปรากฏก่อนหน้านี้
+                if (cruise_start_idx is not None and i >= cruise_start_idx) or ("Cruise" in refined.iloc[:i].values):
                     refined.iloc[i] = "Cruise"
             elif refined.iloc[i] == "Cruise" and alt < (cruise_altitude - 200):
                 # ถ้า altitude ลดลงมากจาก cruise -> Descent
@@ -397,5 +405,35 @@ def _refine_flight_phases(phases: pd.Series, altitude: pd.Series, cruise_altitud
                 else:
                     refined.iloc[i] = prev_phase
     
-    return refined
+        # 6. บังคับลำดับเฟสให้ไม่ย้อนกลับ (monotonic phases)
+        # ลำดับเฟสที่ยอมรับ
+        phase_order = [
+            "Taxi_out",
+            "Takeoff",
+            "Initial_climb",
+            "Climb",
+            "Cruise",
+            "Descent",
+            "Approach",
+            "Landing",
+            "Taxi_in",
+        ]
+        phase_to_idx = {p: i for i, p in enumerate(phase_order)}
+
+        max_idx = -1
+        for i in range(len(refined)):
+            p = refined.iloc[i]
+            idx = phase_to_idx.get(p, None)
+            if idx is None:
+                # Unknown or unexpected phase: keep current max if applicable
+                if max_idx >= 0:
+                    refined.iloc[i] = phase_order[max_idx]
+            else:
+                if idx < max_idx:
+                    # ถ้าเฟสย้อนกลับ ให้เปลี่ยนเป็นเฟสสูงสุดที่เคยเจอ
+                    refined.iloc[i] = phase_order[max_idx]
+                else:
+                    max_idx = idx
+
+        return refined
 
