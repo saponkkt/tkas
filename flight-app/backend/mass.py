@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
 import math
+import re
+from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -64,5 +68,132 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
     else:
         # ถ้าไม่มีคอลัมน์ temperature_K ให้สร้างคอลัมน์ว่าง
         df_out["Density"] = pd.NA
+
+    # เพิ่มคอลัมน์ S_m^2: เลือก wing area ตาม flight_phase และชนิดเครื่องบิน
+    # พารามิเตอร์เสริมที่รองรับ:
+    # - ถ้า DataFrame มีคอลัมน์ 'flight_phase' จะใช้ค่านั้น
+    # - ชื่อชนิดเครื่องบินจะพยายามหาในคอลัมน์ที่เป็นไปได้ (เช่น 'type','aircraft_type','model')
+    # - ถ้าต้องการบังคับชนิดเครื่องบิน ระบุเป็นสตริงในคีย์ config (เช่น '320' หรือ '737')
+    def _load_config() -> dict:
+        cfg_path = Path(__file__).resolve().parent / "config.json"
+        try:
+            with cfg_path.open("r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception:
+            return {}
+
+    config = _load_config()
+
+    # helper to resolve type key from a free-form value
+    def _resolve_type_key(val: object) -> Optional[str]:
+        if pd.isna(val):
+            return None
+        s = str(val).strip()
+        if not s:
+            return None
+        # direct match
+        if s in config:
+            return s
+        # digits match (e.g., 'A320' -> '320')
+        m = re.search(r"(320|737|\d{3})", s)
+        if m:
+            candidate = m.group(1)
+            if candidate in config:
+                return candidate
+        # fallback: check if any config key is substring of s or vice-versa
+        for k in config.keys():
+            if k in s or s in k:
+                return k
+        return None
+
+    # flight_phase column
+    if "flight_phase" not in df_out.columns:
+        # ถ้าไม่มี flight_phase ให้ไม่ใส่ค่าใน S_m^2 (หรืออาจเรียก detect_flight_phase ก่อน)
+        df_out["S_m^2"] = pd.NA
+        return df_out
+
+    # determine aircraft type column (pick first existing)
+    possible_type_cols = [
+        "aircraft_type",
+        "type",
+        "model",
+        "icaoType",
+        "icao",
+        "aircraft",
+        "registration",
+    ]
+    type_col = None
+    for c in possible_type_cols:
+        if c in df_out.columns:
+            type_col = c
+            break
+
+    # vectorized selection per-row
+    def _select_area(row: pd.Series) -> object:
+        phase = row.get("flight_phase")
+        phase_l = str(phase).lower() if not pd.isna(phase) else ""
+
+        # determine type key
+        type_val = None
+        if type_col is not None:
+            type_val = row.get(type_col)
+        # resolve to config key
+        type_key = _resolve_type_key(type_val) if type_val is not None else None
+
+        # default areas
+        wing_clean = None
+        wing_flap = None
+        if type_key is not None and type_key in config:
+            wing_clean = config[type_key].get("wing_area_clean")
+            wing_flap = config[type_key].get("wing_area_flap")
+
+        # mapping rules (phase -> which area to use)
+        # phases treated case-insensitively
+        flap_phases = {"takeoff", "initial_climb", "initialclimb", "initial-climb", "landing"}
+        # normalize some common variants
+        normalized = phase_l.replace(" ", "_")
+
+        use_flap = False
+        if normalized in flap_phases:
+            use_flap = True
+        else:
+            # explicit mapping for names used in flight_phase.py
+            if normalized == "taxi_out":
+                use_flap = False
+            elif normalized == "takeoff":
+                use_flap = True
+            elif normalized == "initial_climb":
+                use_flap = True
+            elif normalized == "climb":
+                use_flap = False
+            elif normalized == "cruise":
+                use_flap = False
+            elif normalized == "descent":
+                use_flap = False
+            elif normalized == "approach":
+                use_flap = False
+            elif normalized == "landing":
+                use_flap = True
+            elif normalized == "taxi_in":
+                use_flap = False
+            else:
+                # unknown phase -> prefer clean
+                use_flap = False
+
+        area = pd.NA
+        if use_flap:
+            area = wing_flap if wing_flap is not None else pd.NA
+        else:
+            area = wing_clean if wing_clean is not None else pd.NA
+
+        # ensure numeric
+        try:
+            if area is pd.NA:
+                return pd.NA
+            return float(area)
+        except Exception:
+            return pd.NA
+
+    df_out["S_m^2"] = df_out.apply(_select_area, axis=1)
     
     return df_out
