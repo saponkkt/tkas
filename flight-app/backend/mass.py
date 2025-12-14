@@ -268,6 +268,105 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
 
     df_out["CD2"] = df_out.apply(_select_cd2, axis=1)
     
-    # CL column removed per user request
+    # เพิ่มคอลัมน์ CD0,deltaLDG: เลือกค่า CD0,deltaLDG จาก section ที่เหมาะสมใน config.json ตาม flight_phase
+    def _select_cd0_deltaLDG(row: pd.Series) -> object:
+        phase = row.get("flight_phase")
+        phase_l = str(phase).lower() if not pd.isna(phase) else ""
+        normalized = phase_l.replace(" ", "_")
+
+        # determine type key
+        type_val = None
+        if type_col is not None:
+            type_val = row.get(type_col)
+        type_key = _resolve_type_key(type_val) if type_val is not None else None
+
+        if type_key is None or type_key not in config:
+            return pd.NA
+
+        section = phase_to_section.get(normalized, "CR")
+        try:
+            sec_obj = config[type_key].get(section, {})
+            val = sec_obj.get("CD0,deltaLDG") if isinstance(sec_obj, dict) else None
+            if val is None:
+                # fallback: some configs might have CD0,deltaLDG at top level
+                val = config[type_key].get("CD0,deltaLDG")
+            if val is None:
+                return pd.NA
+            return float(val)
+        except Exception:
+            return pd.NA
+
+    df_out["CD0,deltaLDG"] = df_out.apply(_select_cd0_deltaLDG, axis=1)
+
+    # เพิ่มคอลัมน์ K: เลือกค่า K ตาม flight_phase และชนิดเครื่องบิน
+    # กฏการแมป (ตามที่ผู้ใช้ระบุ):
+    # taxi_out -> CR
+    # takeoff -> IC
+    # initial_climb -> IC
+    # climb -> CR
+    # cruise -> CR
+    # descent -> CR
+    # approach -> CR
+    # landing -> LD
+    # taxi_in -> CR
+    k_phase_to_section = {
+        "taxi_out": "CR",
+        "takeoff": "IC",
+        "initial_climb": "IC",
+        "climb": "CR",
+        "cruise": "CR",
+        "descent": "CR",
+        "approach": "CR",
+        "landing": "LD",
+        "taxi_in": "CR",
+    }
+
+    def _select_k(row: pd.Series) -> object:
+        phase = row.get("flight_phase")
+        phase_l = str(phase).lower() if not pd.isna(phase) else ""
+        normalized = phase_l.replace(" ", "_")
+
+        # determine type key
+        type_val = None
+        if type_col is not None:
+            type_val = row.get(type_col)
+        type_key = _resolve_type_key(type_val) if type_val is not None else None
+
+        if type_key is None or type_key not in config:
+            return pd.NA
+        section = k_phase_to_section.get(normalized, "CR")
+        # try several candidate section names (uppercase and common lowercase names)
+        alt_map = {"CR": "cruise", "IC": "initial_climb", "LD": "landing", "TO": "takeoff", "AP": "approach"}
+        candidates = [section, section.lower(), alt_map.get(section)]
+        for sec in candidates:
+            if not sec:
+                continue
+            sec_obj = config[type_key].get(sec)
+            if isinstance(sec_obj, dict) and "K" in sec_obj:
+                try:
+                    return float(sec_obj["K"])
+                except Exception:
+                    return pd.NA
+        # fallback top-level K
+        topk = config[type_key].get("K")
+        if topk is None:
+            return pd.NA
+        try:
+            return float(topk)
+        except Exception:
+            return pd.NA
+
+    df_out["K"] = df_out.apply(_select_k, axis=1)
+
+    # เพิ่มคอลัมน์ ROCD_m/s: rate of climb/descent (m/s)
+    # วิธีคำนวณ: (altitude_current - altitude_previous) [ft] -> แปลงเป็น m แล้วหารด้วย delta_t (s)
+    try:
+        alt_ft = pd.to_numeric(df_out.get("altitude"), errors="coerce")
+        alt_diff_ft = alt_ft.diff()
+        delta_t_safe = df_out["delta_t (s)"].replace(0, pd.NA)
+        df_out["ROCD_m/s"] = (alt_diff_ft * 0.3048) / delta_t_safe
+        df_out["ROCD_m/s"] = df_out["ROCD_m/s"].replace([np.inf, -np.inf], pd.NA)
+    except Exception:
+        df_out["ROCD_m/s"] = pd.NA
 
     return df_out
