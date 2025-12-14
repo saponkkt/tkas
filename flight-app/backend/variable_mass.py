@@ -375,4 +375,15 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
     except Exception:
         df_out["ROCD_m/s"] = pd.NA
 
+    # คำนวณ gamma_rad = arcsin(ROCD_m/s / TAS_m/s)
+    try:
+        rocd = pd.to_numeric(df_out.get("ROCD_m/s"), errors="coerce")
+        tas = pd.to_numeric(df_out.get("TAS_m/s"), errors="coerce")
+        ratio = rocd / tas
+        # clamp values to [-1, 1] to avoid NaN from arcsin due to slight numeric errors
+        ratio_clamped = ratio.clip(-1.0, 1.0)
+        df_out["gamma_rad"] = np.arcsin(ratio_clamped)
+    except Exception:
+        df_out["gamma_rad"] = pd.NA
+
     return df_out
