@@ -82,8 +82,9 @@ def get_ctc_series(df: pd.DataFrame, type_col: Optional[str] = None) -> pd.DataF
     s2 = pd.to_numeric(_map_param("CTc2"), errors="coerce")
     s3 = pd.to_numeric(_map_param("CTc3"), errors="coerce")
     s4 = pd.to_numeric(_map_param("CTc4"), errors="coerce")
+    s5 = pd.to_numeric(_map_param("CTc5"), errors="coerce")
 
-    return pd.DataFrame({"CTc1": s1, "CTc2": s2, "CTc3": s3, "CTc4": s4}, index=df.index)
+    return pd.DataFrame({"CTc1": s1, "CTc2": s2, "CTc3": s3, "CTc4": s4, "CTc5": s5}, index=df.index)
 
 
 def compute_thr_max_climb_ISA(df: pd.DataFrame, type_col: Optional[str] = None) -> pd.Series:
@@ -130,3 +131,24 @@ def compute_delta_temp_eff(df: pd.DataFrame, type_col: Optional[str] = None, tem
     ct4 = ctc["CTc4"]
 
     return delta_temp - ct4
+
+
+def compute_thr_max_climb(df: pd.DataFrame, type_col: Optional[str] = None, temp_col: str = "temperature_K", ref: float = 288.15) -> pd.Series:
+    """Compute Thr_max_climb per-row.
+
+    Formula: Thr_max_climb = Thr_max_climb_ISA * (1 - CTc5 * delta_temp_eff)
+
+    - `Thr_max_climb_ISA` is computed by `compute_thr_max_climb_ISA`.
+    - `delta_temp_eff` is computed by `compute_delta_temp_eff`.
+    - `CTc5` is read from `config.json` per resolved aircraft type.
+
+    Returns a pandas Series aligned with `df.index`. Missing inputs yield NaN.
+    """
+    thr_isa = compute_thr_max_climb_ISA(df, type_col=type_col)
+    delta_eff = compute_delta_temp_eff(df, type_col=type_col, temp_col=temp_col, ref=ref)
+    ctc = get_ctc_series(df, type_col=type_col)
+
+    # CTc5 may be missing; ensure alignment
+    ct5 = ctc.get("CTc5") if "CTc5" in ctc.columns else pd.Series([pd.NA] * len(df), index=df.index)
+
+    return thr_isa * (1.0 - ct5 * delta_eff)
