@@ -196,4 +196,76 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
 
     df_out["S_m^2"] = df_out.apply(_select_area, axis=1)
     
+    # เพิ่มคอลัมน์ CD0: เลือกค่า CD0 จาก section ที่เหมาะสมใน config.json ตาม flight_phase
+    phase_to_section = {
+        "taxi_out": "CR",
+        "takeoff": "TO",
+        "initial_climb": "IC",
+        "climb": "CR",
+        "cruise": "CR",
+        "descent": "CR",
+        "approach": "AP",
+        "landing": "LD",
+        "taxi_in": "CR",
+    }
+
+    def _select_cd0(row: pd.Series) -> object:
+        phase = row.get("flight_phase")
+        phase_l = str(phase).lower() if not pd.isna(phase) else ""
+        normalized = phase_l.replace(" ", "_")
+
+        # determine type key
+        type_val = None
+        if type_col is not None:
+            type_val = row.get(type_col)
+        type_key = _resolve_type_key(type_val) if type_val is not None else None
+
+        if type_key is None or type_key not in config:
+            return pd.NA
+
+        section = phase_to_section.get(normalized, "CR")
+        try:
+            sec_obj = config[type_key].get(section, {})
+            cd0 = sec_obj.get("CD0") if isinstance(sec_obj, dict) else None
+            if cd0 is None:
+                # fallback: some configs might have CD0 at top level
+                cd0 = config[type_key].get("CD0")
+            if cd0 is None:
+                return pd.NA
+            return float(cd0)
+        except Exception:
+            return pd.NA
+
+    df_out["CD0"] = df_out.apply(_select_cd0, axis=1)
+
+    # เพิ่มคอลัมน์ CD2: เลือกค่า CD2 จาก section ที่เหมาะสมใน config.json ตาม flight_phase
+    def _select_cd2(row: pd.Series) -> object:
+        phase = row.get("flight_phase")
+        phase_l = str(phase).lower() if not pd.isna(phase) else ""
+        normalized = phase_l.replace(" ", "_")
+
+        # determine type key
+        type_val = None
+        if type_col is not None:
+            type_val = row.get(type_col)
+        type_key = _resolve_type_key(type_val) if type_val is not None else None
+
+        if type_key is None or type_key not in config:
+            return pd.NA
+
+        section = phase_to_section.get(normalized, "CR")
+        try:
+            sec_obj = config[type_key].get(section, {})
+            cd2 = sec_obj.get("CD2") if isinstance(sec_obj, dict) else None
+            if cd2 is None:
+                # fallback: some configs might have CD2 at top level
+                cd2 = config[type_key].get("CD2")
+            if cd2 is None:
+                return pd.NA
+            return float(cd2)
+        except Exception:
+            return pd.NA
+
+    df_out["CD2"] = df_out.apply(_select_cd2, axis=1)
+    
     return df_out
