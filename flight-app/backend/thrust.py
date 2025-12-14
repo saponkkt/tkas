@@ -93,48 +93,16 @@ def compute_thr_max_climb_ISA(df: pd.DataFrame, type_col: Optional[str] = None) 
     Hp is taken from `altitude` column (assumed in feet).
     Returns a pandas Series aligned with df index.
     """
-    config = _load_config()
+    # build per-row CTc series and altitude
+    ctc = get_ctc_series(df, type_col=type_col)
+    Hp = pd.to_numeric(df.get("altitude"), errors="coerce")
 
-    # detect type_col if not provided
-    if type_col is None:
-        possible_type_cols = [
-            "aircraft_type",
-            "type",
-            "model",
-            "icaoType",
-            "icao",
-            "aircraft",
-            "registration",
-        ]
-        for c in possible_type_cols:
-            if c in df.columns:
-                type_col = c
-                break
+    # formula: CTc1*(1-(Hp/CTc2)+CTc3*(Hp**2))
+    with pd.option_context("mode.use_inf_as_na", True):
+        val = ctc["CTc1"] * (1.0 - (Hp / ctc["CTc2"]) + ctc["CTc3"] * (Hp ** 2))
 
-    def _row_val(row: pd.Series) -> object:
-        type_val = row.get(type_col) if type_col is not None else None
-        type_key = _resolve_type_key(type_val, config) if type_val is not None else None
-        if type_key is None or type_key not in config:
-            return pd.NA
-        try:
-            CTc1 = config[type_key].get("CTc1")
-            CTc2 = config[type_key].get("CTc2")
-            CTc3 = config[type_key].get("CTc3")
-            CTc1 = float(CTc1) if CTc1 is not None else None
-            CTc2 = float(CTc2) if CTc2 is not None else None
-            CTc3 = float(CTc3) if CTc3 is not None else None
-            if CTc1 is None or CTc2 is None or CTc3 is None:
-                return pd.NA
-            Hp = row.get("altitude")
-            Hp = float(Hp) if not pd.isna(Hp) else None
-            if Hp is None:
-                return pd.NA
-            val = CTc1 * (1.0 - (Hp / CTc2) + CTc3 * (Hp ** 2))
-            return float(val)
-        except Exception:
-            return pd.NA
-
-    return df.apply(_row_val, axis=1)
+    # ensure index alignment and return numeric series (NaN where incomplete)
+    return pd.Series(val, index=df.index)
 
 
 def compute_delta_temp(df: pd.DataFrame, temp_col: str = "temperature_K", ref: float = 288.15) -> pd.Series:
@@ -156,44 +124,9 @@ def compute_delta_temp_eff(df: pd.DataFrame, type_col: Optional[str] = None, tem
     - CTc4 is read from config.json for the resolved aircraft type
     Returns a pandas Series aligned with df index (pd.NA where unavailable).
     """
-    config = _load_config()
-
-    # detect type_col if not provided
-    if type_col is None:
-        possible_type_cols = [
-            "aircraft_type",
-            "type",
-            "model",
-            "icaoType",
-            "icao",
-            "aircraft",
-            "registration",
-        ]
-        for c in possible_type_cols:
-            if c in df.columns:
-                type_col = c
-                break
-
-    # precompute delta_temp series
+    # compute delta_temp and per-row CTc4, then subtract
     delta_temp = compute_delta_temp(df, temp_col=temp_col, ref=ref)
+    ctc = get_ctc_series(df, type_col=type_col)
+    ct4 = ctc["CTc4"]
 
-    def _row_eff(row: pd.Series) -> object:
-        type_val = row.get(type_col) if type_col is not None else None
-        type_key = _resolve_type_key(type_val, config) if type_val is not None else None
-        if type_key is None or type_key not in config:
-            return pd.NA
-        try:
-            ct4 = config[type_key].get("CTc4")
-            ct4 = float(ct4) if ct4 is not None else None
-            if ct4 is None:
-                return pd.NA
-            # get corresponding delta_temp value
-            idx = row.name
-            dt = delta_temp.loc[idx]
-            if pd.isna(dt):
-                return pd.NA
-            return float(dt) - float(ct4)
-        except Exception:
-            return pd.NA
-
-    return df.apply(_row_eff, axis=1)
+    return delta_temp - ct4
