@@ -358,17 +358,6 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
 
     df_out["K"] = df_out.apply(_select_k, axis=1)
 
-    # Compute Thr_max_climb_ISA using helper in backend.thrust
-    try:
-        from backend.thrust import compute_thr_max_climb_ISA
-
-        try:
-            df_out["Thr_max_climb_ISA"] = compute_thr_max_climb_ISA(df_out, type_col=type_col)
-        except Exception:
-            df_out["Thr_max_climb_ISA"] = pd.NA
-    except Exception:
-        df_out["Thr_max_climb_ISA"] = pd.NA
-
     # เพิ่มคอลัมน์ ROCD_m/s: rate of climb/descent (m/s)
     # วิธีคำนวณ: (altitude_current - altitude_previous) [ft] -> แปลงเป็น m แล้วหารด้วย delta_t (s)
     try:
