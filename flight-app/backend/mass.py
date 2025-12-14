@@ -268,24 +268,6 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
 
     df_out["CD2"] = df_out.apply(_select_cd2, axis=1)
     
-    # เพิ่มคอลัมน์ CL: CL = (2 * m * g) / (Density * TAS^2 * S)
-    # ค่าคงที่
-    m_aircraft = 61681.68  # kg
-    g_const = 9.80665
-
-    # ดึงค่าและแปลงเป็นตัวเลขอย่างปลอดภัย
-    density = pd.to_numeric(df_out.get("Density"), errors="coerce")
-    tas = pd.to_numeric(df_out.get("TAS_m/s"), errors="coerce")
-    s_area = pd.to_numeric(df_out.get("S_m^2"), errors="coerce")
-
-    # หลีกเลี่ยงการหารด้วยศูนย์หรือค่าไม่สมเหตุสมผล
-    denom = density * (tas ** 2) * s_area
-    denom = denom.replace(0, pd.NA)
-
-    cl = (2.0 * m_aircraft * g_const) / denom
-    # แปลงค่าอินฟินิตี้เป็น NA
-    cl = cl.replace([np.inf, -np.inf], pd.NA)
-
-    df_out["CL"] = cl
+    # CL column removed per user request
 
     return df_out
