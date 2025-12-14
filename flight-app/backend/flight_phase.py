@@ -39,12 +39,14 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
     # แปลงคอลัมน์เป็น numeric
     altitude = pd.to_numeric(df_out[alt_col], errors="coerce")
     
-    # ตรวจสอบว่ามีคอลัมน์ track หรือไม่
-    if track_col not in df_out.columns:
-        # ถ้าไม่มี track ให้ใช้ค่า NaN สำหรับการตรวจสอบ
-        track = pd.Series([np.nan] * len(df_out))
-    else:
+    # ตรวจสอบว่ามีคอลัมน์ track หรือไม่ ถ้าไม่มีลองหา Direction
+    if track_col in df_out.columns:
         track = pd.to_numeric(df_out[track_col], errors="coerce")
+    elif "Direction" in df_out.columns:
+        track = pd.to_numeric(df_out["Direction"], errors="coerce")
+    else:
+        # ถ้าไม่มี track หรือ Direction ให้ใช้ค่า NaN สำหรับการตรวจสอบ
+        track = pd.Series([np.nan] * len(df_out))
     
     # เริ่มต้นด้วยค่า Unknown
     phases = pd.Series(["Unknown"] * len(df_out), dtype=object)
