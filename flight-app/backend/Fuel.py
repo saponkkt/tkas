@@ -98,3 +98,43 @@ def add_fnom_column(
         df_out, thrust_col=thrust_col, eta_col=eta_col
     )
     return df_out
+
+
+def compute_fmin_kg_per_s(
+    df: pd.DataFrame,
+    type_col: Optional[str] = "aircraft_type",
+    alt_col: str = "altitude",
+) -> pd.Series:
+    """คำนวณคอลัมน์ fmin_kg/s ตามสูตร:
+
+    fmin = Cf3 * (1 - altitude / Cf4) / 60
+
+    โดย:
+    - `Cf3`, `Cf4` อ่านจาก `config.json` ตามชนิดเครื่องบิน (type_col)
+    - `altitude` คือคอลัมน์ความสูง (หน่วย ft) ใน DataFrame
+    """
+    cf3 = pd.to_numeric(get_config_param_series(df, "Cf3", type_col=type_col), errors="coerce")
+    cf4 = pd.to_numeric(get_config_param_series(df, "Cf4", type_col=type_col), errors="coerce")
+    alt = pd.to_numeric(df.get(alt_col), errors="coerce")
+
+    with pd.option_context("mode.use_inf_as_na", True):
+        fmin = cf3 * (1.0 - (alt / cf4)) / 60.0
+
+    fmin.name = "fmin_kg_per_s"
+    return fmin
+
+
+def add_fmin_column(
+    df: pd.DataFrame,
+    type_col: Optional[str] = "aircraft_type",
+    alt_col: str = "altitude",
+) -> pd.DataFrame:
+    """คืน DataFrame ใหม่ที่เพิ่มคอลัมน์ `fmin_kg_per_s` เข้าไป.
+
+    ใช้สูตรเดียวกับ `compute_fmin_kg_per_s`.
+    """
+    df_out = df.copy()
+    df_out["fmin_kg_per_s"] = compute_fmin_kg_per_s(
+        df_out, type_col=type_col, alt_col=alt_col
+    )
+    return df_out
