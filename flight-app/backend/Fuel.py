@@ -49,3 +49,52 @@ def add_eta_column(
         df_out, type_col=type_col, tas_col=tas_col
     )
     return df_out
+
+
+def compute_fnom_kg_per_s(
+    df: pd.DataFrame,
+    thrust_col: str = "Thrust_N",
+    eta_col: str = "eta_kg_per_min_per_kN",
+) -> pd.Series:
+    """คำนวณคอลัมน์ fnom_kg/s ตามสูตร:
+
+    fnom = eta_kg_per_min_per_kN * Thrust_N * 10^-3 / 60
+
+    โดย:
+    - `eta_kg_per_min_per_kN` มาจากคอลัมน์ eta ที่คำนวณจาก `compute_eta_kg_per_min_per_kN`
+    - `Thrust_N` มาจากผลการคำนวณในไฟล์ thrust (คอลัมน์ชื่อเดียวกันใน DataFrame)
+    """
+    eta = pd.to_numeric(df.get(eta_col), errors="coerce")
+    thrust = pd.to_numeric(df.get(thrust_col), errors="coerce")
+
+    with pd.option_context("mode.use_inf_as_na", True):
+        fnom = eta * thrust * 1e-3 / 60.0
+
+    fnom.name = "fnom_kg_per_s"
+    return fnom
+
+
+def add_fnom_column(
+    df: pd.DataFrame,
+    thrust_col: str = "Thrust_N",
+    eta_col: str = "eta_kg_per_min_per_kN",
+    type_col: Optional[str] = "aircraft_type",
+    tas_col: str = "TAS_kt",
+) -> pd.DataFrame:
+    """คืน DataFrame ใหม่ที่เพิ่มคอลัมน์ `fnom_kg_per_s`.
+
+    - ถ้ายังไม่มีคอลัมน์ `eta_kg_per_min_per_kN` จะคำนวณเพิ่มให้อัตโนมัติ
+    - ใช้สูตรเดียวกับ `compute_fnom_kg_per_s`.
+    """
+    df_out = df.copy()
+
+    # ถ้ายังไม่มี eta ให้คำนวณเพิ่มก่อน
+    if eta_col not in df_out.columns:
+        df_out["eta_kg_per_min_per_kN"] = compute_eta_kg_per_min_per_kN(
+            df_out, type_col=type_col, tas_col=tas_col
+        )
+
+    df_out["fnom_kg_per_s"] = compute_fnom_kg_per_s(
+        df_out, thrust_col=thrust_col, eta_col=eta_col
+    )
+    return df_out
