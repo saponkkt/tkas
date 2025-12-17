@@ -197,3 +197,55 @@ def add_fapld_column(
     )
 
     return df_out
+
+
+def compute_fcr_kg_per_s(
+    df: pd.DataFrame,
+    type_col: Optional[str] = "aircraft_type",
+    thrust_col: str = "Thrust_N",
+    eta_col: str = "eta_kg_per_min_per_kN",
+) -> pd.Series:
+    """คำนวณคอลัมน์ fcr_kg/s ตามสูตร:
+
+    fcr = eta_kg_per_min_per_kN * Thrust_N * Cfcr * 10^-3 / 60
+
+    โดย:
+    - `eta_kg_per_min_per_kN` มาจากคอลัมน์ใน DataFrame
+    - `Thrust_N` มาจากคอลัมน์ใน DataFrame
+    - `Cfcr` อ่านจาก `config.json` ตามชนิดเครื่องบิน (type_col)
+    """
+    eta = pd.to_numeric(df.get(eta_col), errors="coerce")
+    thrust = pd.to_numeric(df.get(thrust_col), errors="coerce")
+    cfcr = pd.to_numeric(get_config_param_series(df, "Cfcr", type_col=type_col), errors="coerce")
+
+    with pd.option_context("mode.use_inf_as_na", True):
+        fcr = eta * thrust * cfcr * 1e-3 / 60.0
+
+    fcr.name = "fcr_kg_per_s"
+    return fcr
+
+
+def add_fcr_column(
+    df: pd.DataFrame,
+    type_col: Optional[str] = "aircraft_type",
+    thrust_col: str = "Thrust_N",
+    eta_col: str = "eta_kg_per_min_per_kN",
+    tas_col: str = "TAS_kt",
+) -> pd.DataFrame:
+    """คืน DataFrame ใหม่ที่เพิ่มคอลัมน์ `fcr_kg_per_s`.
+
+    - ถ้ายังไม่มีคอลัมน์ `eta_kg_per_min_per_kN` จะคำนวณเพิ่มให้อัตโนมัติ
+    - ใช้สูตรเดียวกับ `compute_fcr_kg_per_s`.
+    """
+    df_out = df.copy()
+
+    # ถ้ายังไม่มี eta ให้คำนวณเพิ่มก่อน
+    if eta_col not in df_out.columns:
+        df_out["eta_kg_per_min_per_kN"] = compute_eta_kg_per_min_per_kN(
+            df_out, type_col=type_col, tas_col=tas_col
+        )
+
+    df_out["fcr_kg_per_s"] = compute_fcr_kg_per_s(
+        df_out, type_col=type_col, thrust_col=thrust_col, eta_col=eta_col
+    )
+    return df_out
