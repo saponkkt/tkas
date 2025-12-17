@@ -17,11 +17,12 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
     
     Flight phases:
     - Taxi_out: altitude = 0 ft, track ไม่คงที่ (ช่วงแรกสุด, ก่อน Takeoff)
-    - Takeoff: altitude = 0 ft, track คงที่/นิ่ง (อาจเพิ่มขึ้นเล็กน้อย) (หลัง Taxi_out, ก่อน Initial_climb)
-    - Initial_climb: altitude > 0 ft ถึง 2000 ft (หลัง Takeoff)
+    - Takeoff: altitude = 0 ft, และค่า track/Direction คงที่ (เป็นค่าเดียวกันหรือใกล้เคียงกัน) ซ้ำกันมากกว่า 3 แถว
+      โดยช่วงนี้ต้องอยู่ "หลัง Taxi_out" และ "ก่อน Initial_climb" (ช่วงก่อนบรรทัดแรกของ Initial_climb)
+    - Initial_climb: altitude > 0 ft ถึง 2000 ft เฉพาะช่วงที่เกิด "หลัง Takeoff" และ "ก่อน Climb"
     - Climb: altitude > 2000 ft ถึง (cruise_altitude - 1 ft) (หลัง Initial_climb)
-    - Cruise: altitude คงที่นิ่ง (หลัง Climb)
-    - Descent: altitude เปลี่ยนจาก Cruise ลงมา ถึง > 8000 ft (หลัง Cruise)
+    - Cruise: ช่วงที่ altitude สูงที่สุด และมีค่าซ้ำต่อกันมากกว่า 5 แถว (หลัง Climb และก่อน Descent)
+    - Descent: altitude เปลี่ยนจาก Cruise ลงมา ถึง > 8000 ft (หลัง Cruise และหลังช่วง Cruise ที่เป็น altitude สูงสุด)
     - Approach: altitude 8000 ft ถึง 3000 ft (หลัง Descent)
     - Landing: altitude < 3000 ft ถึง 0 ft, track คงที่/ซ้ำเยอะ (หลัง Approach)
     - Taxi_in: altitude = 0 ft, track ไม่คงที่/เปลี่ยน (ช่วงท้ายสุด, หลัง Landing)
@@ -121,17 +122,56 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
                         phases.iloc[i] = "Takeoff"
             elif i > last_flying_idx:
                 # หลังบินลง: Landing หรือ Taxi_in
-                # ตรวจสอบ track stability ใน window ข้างๆ
-                window_start = max(0, i - 5)
-                window_end = min(len(track_stability), i + 6)
-                window_stability = track_stability.iloc[window_start:window_end].mean()
-                
-                if window_stability < 0.6:
-                    # track ไม่คงที่ -> Taxi_in
-                    phases.iloc[i] = "Taxi_in"
+                # ตรวจสอบ phase ก่อนหน้าเพื่อตัดสินใจ
+                if i > 0:
+                    prev_phase = phases.iloc[i-1]
+                    # ถ้า phase ก่อนหน้าเป็น Landing/Approach/Descent ให้เป็น Landing ต่อก่อน
+                    if prev_phase in ["Landing", "Approach", "Descent"]:
+                        # ตรวจสอบ track stability ใน window ข้างๆ
+                        window_start = max(0, i - 5)
+                        window_end = min(len(track_stability), i + 6)
+                        window_stability = track_stability.iloc[window_start:window_end].mean()
+                        
+                        # นับจำนวน Landing ต่อเนื่องกันก่อนหน้านี้
+                        landing_count = 0
+                        for j in range(i-1, max(-1, i-20), -1):
+                            if j >= 0 and phases.iloc[j] == "Landing":
+                                landing_count += 1
+                            else:
+                                break
+                        
+                        # ถ้า track ไม่คงที่มาก (stability < 0.3) และมี Landing ต่อเนื่องกันมานานแล้ว (>= 5 แถว)
+                        # ให้เปลี่ยนเป็น Taxi_in
+                        if window_stability < 0.3 and landing_count >= 5:
+                            phases.iloc[i] = "Taxi_in"
+                        else:
+                            # ยังเป็น Landing ต่อ
+                            phases.iloc[i] = "Landing"
+                    elif prev_phase == "Taxi_in":
+                        # ถ้า phase ก่อนหน้าเป็น Taxi_in แล้ว ให้เป็น Taxi_in ต่อ
+                        phases.iloc[i] = "Taxi_in"
+                    else:
+                        # กรณีอื่นๆ (เช่น Unknown) ให้ตรวจสอบ track stability
+                        window_start = max(0, i - 5)
+                        window_end = min(len(track_stability), i + 6)
+                        window_stability = track_stability.iloc[window_start:window_end].mean()
+                        
+                        if window_stability < 0.3:
+                            # track ไม่คงที่มาก -> Taxi_in
+                            phases.iloc[i] = "Taxi_in"
+                        else:
+                            # track คงที่ -> Landing
+                            phases.iloc[i] = "Landing"
                 else:
-                    # track คงที่ -> Landing
-                    phases.iloc[i] = "Landing"
+                    # ถ้าเป็นแถวแรก ให้ตรวจสอบ track stability
+                    window_start = max(0, i - 5)
+                    window_end = min(len(track_stability), i + 6)
+                    window_stability = track_stability.iloc[window_start:window_end].mean()
+                    
+                    if window_stability < 0.3:
+                        phases.iloc[i] = "Taxi_in"
+                    else:
+                        phases.iloc[i] = "Landing"
             else:
                 # ระหว่างบิน แต่ altitude = 0 (อาจเป็นข้อมูลผิดพลาด)
                 # ดูจากบริบทรอบๆ
@@ -169,8 +209,6 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
             
             if is_cruise:
                 phases.iloc[i] = "Cruise"
-            elif alt <= 2000:
-                phases.iloc[i] = "Initial_climb"
             elif has_passed_cruise:
                 # ผ่าน Cruise แล้ว -> ต้องเป็น Descent, Approach, หรือ Landing
                 if alt > 8000:
@@ -187,41 +225,55 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
                     phases.iloc[i] = "Cruise"
                 else:
                     phases.iloc[i] = "Climb"
-            elif alt > 8000:
-                # ยังไม่ถึง Cruise และ altitude > 8000 -> Climb
-                phases.iloc[i] = "Climb"
-            elif cruise_altitude is not None and alt < cruise_altitude:
-                # ยังไม่ถึง Cruise และ altitude < cruise_altitude -> Climb
-                phases.iloc[i] = "Climb"
+            elif alt < 2000 and alt > 0:
+                # ช่วงต่ำกว่า 2000 ft ก่อนถึง Cruise
+                # ต้องเป็น Initial_climb (ต่อจาก Takeoff/Taxi_out) หรือ Landing (จากด้านบนลงมา)
+                if i > 0 and phases.iloc[i-1] in ["Approach", "Descent", "Landing"]:
+                    # มาจากด้านบนเพื่อจะลงพื้น -> Landing
+                    phases.iloc[i] = "Landing"
+                else:
+                    # หลัง Takeoff/Taxi_out/Initial_climb หรือไม่เข้าเคสชัดเจน -> Initial_climb
+                    phases.iloc[i] = "Initial_climb"
             elif 3000 <= alt <= 8000:
-                # ตรวจสอบว่าเป็น Approach หรือ Climb
+                # ช่วง 3000–8000 ft ก่อนถึง Cruise: แยก Climb vs Approach ตามบริบท
                 if has_passed_cruise or (i > 0 and phases.iloc[i-1] in ["Descent", "Approach"]):
                     phases.iloc[i] = "Approach"
                 else:
                     phases.iloc[i] = "Climb"
-            elif alt < 3000 and alt > 0:
-                # ตรวจสอบว่าเป็น Landing หรือ Initial_climb
-                if i > 0 and phases.iloc[i-1] in ["Approach", "Descent", "Landing"]:
-                    phases.iloc[i] = "Landing"
-                else:
-                    phases.iloc[i] = "Initial_climb"
+            elif alt > 8000:
+                # ยังไม่ถึง Cruise และ altitude > 8000 -> Climb
+                phases.iloc[i] = "Climb"
+            elif cruise_altitude is not None and alt < cruise_altitude:
+                # ยังไม่ถึง Cruise และ altitude ต่ำกว่า cruise_altitude แต่ไม่เข้า band อื่น -> Climb
+                phases.iloc[i] = "Climb"
             else:
                 phases.iloc[i] = "Unknown"
-    
-    # 6. ปรับปรุง phases ให้ต่อเนื่องและสมเหตุสมผล
+
+    # 6. ปรับปรุงช่วง Takeoff ให้ตรงกับนิยามใหม่
+    #    - หา Initial_climb ก่อน
+    #    - ก่อนบรรทัดแรกของ Initial_climb ให้หาช่วงที่ altitude = 0 และค่า track/Direction ซ้ำกัน > 3 แถว
+    #      ช่วงนั้นจะถูกกำหนดให้เป็น Takeoff และช่วงก่อนหน้าให้เป็น Taxi_out
+    phases = _apply_takeoff_from_initial_climb(phases, altitude, track)
+
+    # 7. ปรับปรุง phases ให้ต่อเนื่องและสมเหตุสมผล
     phases = _refine_flight_phases(phases, altitude, cruise_altitude, cruise_start_idx, cruise_end_idx)
+    
+    # 8. ปรับปรุง Landing/Taxi_in ตาม Direction ที่ altitude = 0 ft
+    phases = _refine_landing_taxi_in_by_direction(phases, altitude, track, tolerance_deg=5.0)
     
     df_out["flight_phase"] = phases
     return df_out
 
 
-def _detect_cruise_altitude(altitude: pd.Series, min_stable_rows: int = 30, tolerance_ft: float = 50.0) -> Optional[float]:
+def _detect_cruise_altitude(altitude: pd.Series, min_stable_rows: int = 6, tolerance_ft: float = 50.0) -> Optional[float]:
     """
-    หา Cruise Altitude โดยดูหาช่วงที่ altitude ซ้ำตัวเดิมซ้ำต่อกันไปเรื่อยๆ
+    หา Cruise Altitude โดยกำหนดให้:
+    - Cruise คือช่วงที่มีค่า altitude สูงที่สุด (maximum altitude)
+    - ค่า altitude (หลังปัด/ปัดลงเป็นช่วงๆ) ต้องซ้ำต่อกันอย่างน้อย min_stable_rows แถว
     
     Args:
         altitude: Series ของ altitude values
-        min_stable_rows: จำนวนแถวขั้นต่ำที่ต้องซ้ำเพื่อนับเป็น Cruise
+        min_stable_rows: จำนวนแถวขั้นต่ำที่ต้องซ้ำเพื่อนับเป็น Cruise (ต้อง > 5 แถว)
         tolerance_ft: ความยอมรับได้ของความแตกต่าง (feet) - ใช้สำหรับปัดเศษ
     
     Returns:
@@ -229,57 +281,48 @@ def _detect_cruise_altitude(altitude: pd.Series, min_stable_rows: int = 30, tole
     """
     if len(altitude) < min_stable_rows:
         return None
-    
-    # ปัดเศษ altitude เพื่อหาค่าที่ซ้ำกัน (ปัดเป็น 100 ft)
-    # ใช้การปัดลง (floor) เพื่อหลีกเลี่ยงการปัดขึ้นที่ทำให้ค่าใกล้เคียงกับ cruise ถูกนับผิด
+
+    # ปัด altitude เป็นช่วง 100 ft และใช้ค่า "สูงสุด" ของช่วงเหล่านั้น
     altitude_rounded = np.floor(altitude / 100) * 100
-    
-    # หาช่วงที่ altitude ซ้ำต่อเนื่องกัน
-    best_cruise_alt = None
+
+    # หา altitude สูงสุด (หลังปัด)
+    if altitude_rounded.dropna().empty:
+        return None
+    max_alt = float(altitude_rounded.max(skipna=True))
+
+    # หาช่วงที่ altitude (หลังปัด) เท่ากับ max_alt ต่อเนื่องกันอย่างน้อย min_stable_rows แถว
+    best_start = None
+    best_end = None
     best_length = 0
-    best_start = 0
-    best_end = 0
-    
+
     i = 0
-    while i < len(altitude_rounded) - min_stable_rows:
-        if pd.isna(altitude_rounded.iloc[i]) or altitude.iloc[i] < 5000:
+    n = len(altitude_rounded)
+    while i < n:
+        if pd.isna(altitude_rounded.iloc[i]) or abs(altitude_rounded.iloc[i] - max_alt) > tolerance_ft:
             i += 1
             continue
-        
-        # หาค่า altitude ที่ซ้ำในจุดนี้
-        current_alt = altitude_rounded.iloc[i]
+
         start_idx = i
-        
-        # นับจำนวนแถวที่ซ้ำต่อเนื่องกัน
-        j = i
-        while j < len(altitude_rounded):
-            if pd.isna(altitude_rounded.iloc[j]):
-                j += 1
-                continue
-            # ตรวจสอบว่าค่าใกล้เคียงกันหรือไม่ (ภายใน tolerance)
-            if abs(altitude_rounded.iloc[j] - current_alt) <= tolerance_ft:
-                j += 1
-            else:
-                break
-        
-        # ถ้าช่วงยาวพอ
-        length = j - start_idx
-        if length >= min_stable_rows:
-            # คำนวณค่าเฉลี่ยของ altitude จริง (ไม่ใช่ rounded)
-            cruise_window = altitude.iloc[start_idx:j].dropna()
-            if len(cruise_window) > 0:
-                cruise_mean = float(cruise_window.mean())
-                # ถ้าช่วงนี้ยาวกว่าช่วงที่เจอมาก่อน ให้อัพเดท
-                if length > best_length:
-                    best_length = length
-                    best_cruise_alt = cruise_mean
-                    best_start = start_idx
-                    best_end = j
-        
-        # ข้ามไปยังจุดที่ค่าเปลี่ยน
-        i = j
-    
-    return best_cruise_alt
+        while i < n and not pd.isna(altitude_rounded.iloc[i]) and abs(altitude_rounded.iloc[i] - max_alt) <= tolerance_ft:
+            i += 1
+        end_idx = i
+
+        length = end_idx - start_idx
+        if length > best_length:
+            best_length = length
+            best_start = start_idx
+            best_end = end_idx
+
+    # ถ้าไม่มีช่วงที่ยาวพอ ถือว่าไม่มี Cruise
+    if best_length < min_stable_rows or best_start is None or best_end is None:
+        return None
+
+    # ใช้ค่าเฉลี่ยของ altitude จริงในช่วง Cruise ที่สูงที่สุด
+    cruise_window = altitude.iloc[best_start:best_end].dropna()
+    if cruise_window.empty:
+        return None
+
+    return float(cruise_window.mean())
 
 
 def _calculate_track_stability(track: pd.Series, window_size: int = 10) -> pd.Series:
@@ -317,6 +360,191 @@ def _calculate_track_stability(track: pd.Series, window_size: int = 10) -> pd.Se
     return stability
 
 
+def _apply_takeoff_from_initial_climb(
+    phases: pd.Series,
+    altitude: pd.Series,
+    track: pd.Series,
+    min_takeoff_rows: int = 1,
+    track_tolerance_deg: float = 5.0,
+) -> pd.Series:
+    """
+    ปรับปรุงช่วง Takeoff ตามนิยาม:
+    - หา "ช่วง Initial_climb" ก่อน (phase = Initial_climb)
+    - ก่อนบรรทัดแรกของแต่ละช่วง Initial_climb:
+        - ดูค่าของ track/Direction ที่บรรทัดนั้น (target_track)
+        - ไล่ย้อนขึ้นไปทีละบรรทัดในอดีต (ย้อนหลัง):
+            - altitude ต้องเป็น 0
+            - track/Direction ต้องมีค่าเท่ากัน หรือแตกต่างไม่เกิน track_tolerance_deg
+        - ถ้าช่วงที่เข้าเงื่อนไขมีความยาว >= min_takeoff_rows
+          ให้ช่วงนั้นเป็น Takeoff ทั้งหมด
+          และบรรทัดก่อนหน้า Takeoff (ถ้าเป็น Takeoff เดิม) ให้ปรับกลับเป็น Taxi_out
+    """
+    refined = phases.copy()
+
+    if len(refined) == 0:
+        return refined
+
+    # หา index ของทุกช่วง Initial_climb
+    initial_mask = refined == "Initial_climb"
+    if not initial_mask.any():
+        return refined
+
+    initial_indices = np.where(initial_mask.to_numpy())[0]
+
+    # หา segment ต่อเนื่องของ Initial_climb
+    segments: list[tuple[int, int]] = []
+    start = initial_indices[0]
+    prev = start
+    for idx in initial_indices[1:]:
+        if idx == prev + 1:
+            prev = idx
+        else:
+            segments.append((start, prev))
+            start = idx
+            prev = idx
+    segments.append((start, prev))
+
+    n = len(refined)
+
+    for seg_start, _seg_end in segments:
+        ic_first_idx = seg_start
+        if ic_first_idx <= 0:
+            continue
+
+        target_track = track.iloc[ic_first_idx]
+        if pd.isna(target_track):
+            continue
+
+        # ไล่ย้อนขึ้นไปหาช่วง Takeoff candidate
+        j = ic_first_idx - 1
+        count = 0
+        while j >= 0:
+            alt_j = altitude.iloc[j]
+            trk_j = track.iloc[j]
+            if alt_j != 0 or pd.isna(trk_j):
+                break
+            if abs(trk_j - target_track) > track_tolerance_deg:
+                break
+            count += 1
+            j -= 1
+
+        if count >= min_takeoff_rows:
+            takeoff_start = ic_first_idx - count
+            takeoff_end = ic_first_idx - 1
+
+            # ปรับ phase ช่วง takeoff ให้เป็น Takeoff
+            for k in range(takeoff_start, takeoff_end + 1):
+                refined.iloc[k] = "Takeoff"
+
+            # ช่วงก่อนหน้า takeoff ถ้ามี Takeoff เกินออกไป ให้เปลี่ยนกลับเป็น Taxi_out
+            for k in range(0, takeoff_start):
+                if refined.iloc[k] == "Takeoff":
+                    refined.iloc[k] = "Taxi_out"
+
+        return refined
+
+
+def _refine_landing_taxi_in_by_direction(
+    phases: pd.Series,
+    altitude: pd.Series,
+    track: pd.Series,
+    tolerance_deg: float = 5.0,
+) -> pd.Series:
+    """
+    ปรับปรุง Landing/Taxi_in ตาม Direction ที่ altitude = 0 ft:
+    
+    - หาแถวแรกที่ altitude = 0 ft หลังบินลง (ref_direction = Direction ของแถวนั้น)
+    - สำหรับแถวที่ altitude = 0 ft:
+      - ถ้า Direction ต่างจาก ref_direction ไม่เกิน ±tolerance_deg → Landing
+      - ถ้า Direction ต่างจาก ref_direction เกิน ±tolerance_deg → Taxi_in
+    - ตรวจสอบแถวก่อนหน้าแถวแรกที่ altitude = 0 ft ด้วย:
+      - ถ้า Direction ต่างจาก ref_direction ไม่เกิน ±tolerance_deg → Landing
+      - ถ้า Direction ต่างจาก ref_direction เกิน ±tolerance_deg → Taxi_in
+    """
+    refined = phases.copy()
+    
+    # หาจุดที่ altitude กลับมาเป็น 0 (หลังบิน)
+    last_non_zero_idx = altitude[altitude > 0].index
+    if len(last_non_zero_idx) == 0:
+        return refined
+    
+    last_flying_idx = last_non_zero_idx[-1]
+    
+    # หาแถวแรกที่ altitude = 0 ft หลังบินลง
+    first_zero_after_flight_idx = None
+    for i in range(last_flying_idx + 1, len(altitude)):
+        if altitude.iloc[i] == 0 or (pd.isna(altitude.iloc[i]) == False and altitude.iloc[i] < 10):
+            first_zero_after_flight_idx = i
+            break
+    
+    if first_zero_after_flight_idx is None:
+        return refined
+    
+    # ใช้ Direction ของแถวแรกที่ altitude = 0 ft เป็น ref_direction
+    ref_direction = track.iloc[first_zero_after_flight_idx]
+    if pd.isna(ref_direction):
+        return refined
+    
+    # ตรวจสอบแถวก่อนหน้าแถวแรกที่ altitude = 0 ft (ถ้ามี altitude < 3000 ft และ > 0 ft)
+    if first_zero_after_flight_idx > 0:
+        prev_idx = first_zero_after_flight_idx - 1
+        prev_alt = altitude.iloc[prev_idx]
+        if prev_alt < 3000 and prev_alt > 0:
+            # ตรวจสอบว่า phase ก่อนหน้าเป็น Approach/Descent/Landing หรือไม่
+            if prev_idx > 0:
+                prev_phase = refined.iloc[prev_idx - 1]
+                if prev_phase in ["Approach", "Descent", "Landing"]:
+                    # ตรวจสอบ Direction
+                    prev_direction = track.iloc[prev_idx]
+                    if not pd.isna(prev_direction):
+                        # คำนวณความต่างของ Direction (จัดการกรณีที่ Direction วนรอบ 0-360)
+                        diff = abs(prev_direction - ref_direction)
+                        if diff > 180:
+                            diff = 360 - diff
+                        
+                        if diff <= tolerance_deg:
+                            # Direction ใกล้เคียงกับ ref_direction → Landing
+                            refined.iloc[prev_idx] = "Landing"
+                        else:
+                            # Direction ต่างจาก ref_direction เกิน tolerance → Taxi_in
+                            refined.iloc[prev_idx] = "Taxi_in"
+    
+    # ตรวจสอบแถวที่ altitude = 0 ft ทั้งหมด
+    for i in range(first_zero_after_flight_idx, len(altitude)):
+        alt = altitude.iloc[i]
+        is_ground = (alt == 0) or (pd.isna(alt) == False and alt < 10)
+        
+        if not is_ground:
+            # ถ้าไม่ใช่ ground อีกต่อไป ให้หยุด
+            break
+        
+        # ตรวจสอบว่า phase ก่อนหน้าเป็น Approach/Descent/Landing หรือไม่
+        if i > 0:
+            prev_phase = refined.iloc[i-1]
+            if prev_phase not in ["Approach", "Descent", "Landing"]:
+                # ถ้า phase ก่อนหน้าไม่ใช่ Approach/Descent/Landing อาจไม่ใช่ช่วง Landing
+                continue
+        
+        # ตรวจสอบ Direction
+        curr_direction = track.iloc[i]
+        if pd.isna(curr_direction):
+            continue
+        
+        # คำนวณความต่างของ Direction (จัดการกรณีที่ Direction วนรอบ 0-360)
+        diff = abs(curr_direction - ref_direction)
+        if diff > 180:
+            diff = 360 - diff
+        
+        if diff <= tolerance_deg:
+            # Direction ใกล้เคียงกับ ref_direction → Landing
+            refined.iloc[i] = "Landing"
+        else:
+            # Direction ต่างจาก ref_direction เกิน tolerance → Taxi_in
+            refined.iloc[i] = "Taxi_in"
+    
+    return refined
+
+
 def _refine_flight_phases(phases: pd.Series, altitude: pd.Series, cruise_altitude: Optional[float], cruise_start_idx: Optional[int] = None, cruise_end_idx: Optional[int] = None) -> pd.Series:
     """
     ปรับปรุง flight phases ให้ต่อเนื่องและสมเหตุสมผล
@@ -327,7 +555,7 @@ def _refine_flight_phases(phases: pd.Series, altitude: pd.Series, cruise_altitud
     """
     refined = phases.copy()
     
-    # 1. แก้ไข Landing phase - ต้องเป็นช่วงที่ altitude ลดลงจาก 3000 ถึง 0
+    # 1. แก้ไข Landing phase - ต้องเป็นช่วงที่ altitude ลดลงจาก 3000 ถึง 0 และต่อจาก Approach
     for i in range(len(refined)):
         alt = altitude.iloc[i]
         if alt < 3000 and alt > 0:
@@ -335,6 +563,7 @@ def _refine_flight_phases(phases: pd.Series, altitude: pd.Series, cruise_altitud
             if i > 0:
                 prev_phase = refined.iloc[i-1]
                 if prev_phase in ["Approach", "Descent", "Landing"]:
+                    # Landing ต้องต่อจาก Approach/Descent/Landing
                     refined.iloc[i] = "Landing"
                 elif prev_phase in ["Initial_climb", "Climb"]:
                     # ยังไม่ควรเป็น Landing
