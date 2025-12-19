@@ -48,6 +48,9 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
     else:
         # ถ้าไม่มี track หรือ Direction ให้ใช้ค่า NaN สำหรับการตรวจสอบ
         track = pd.Series([np.nan] * len(df_out))
+
+    # ในช่วงก่อนบิน (ground) เราจะยังไม่ตัดสินว่าเป็น Taxi_out หรือ Takeoff
+    # ตัดสินใจช่วง Takeoff โดยย้อนจาก `Initial_climb` ในภายหลัง
     
     # เริ่มต้นด้วยค่า Unknown
     phases = pd.Series(["Unknown"] * len(df_out), dtype=object)
@@ -103,23 +106,9 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
         if is_ground:
             # Ground phases: Taxi_out, Takeoff, Landing, Taxi_in
             if i < first_flying_idx:
-                # ก่อนบินขึ้น: Taxi_out หรือ Takeoff
-                # ตรวจสอบ track stability ใน window ข้างๆ
-                window_start = max(0, i - 5)
-                window_end = min(len(track_stability), i + 6)
-                window_stability = track_stability.iloc[window_start:window_end].mean()
-
-                # ถ้ามี Takeoff หรือ Initial_climb เกิดขึ้นก่อนหน้านี้
-                # อย่าเปลี่ยนกลับไปเป็น Taxi_out อีก (เครื่องบินไม่สามารถกลับมา Taxi_out หลังเริ่ม Takeoff)
-                if i > 0 and any(p in ["Takeoff", "Initial_climb"] for p in phases.iloc[:i].values):
-                    phases.iloc[i] = "Takeoff"
-                else:
-                    if window_stability < 0.6:
-                        # track ไม่คงที่ -> Taxi_out
-                        phases.iloc[i] = "Taxi_out"
-                    else:
-                        # track คงที่ -> Takeoff
-                        phases.iloc[i] = "Takeoff"
+                # ก่อนบินขึ้น: ยังไม่กำหนดเป็น Taxi_out หรือ Takeoff ที่ระดับนี้
+                # จะกำหนดช่วง Takeoff โดยย้อนจาก Initial_climb ภายหลัง
+                phases.iloc[i] = "Unknown"
             elif i > last_flying_idx:
                 # หลังบินลง: Landing หรือ Taxi_in
                 # ตรวจสอบ phase ก่อนหน้าเพื่อตัดสินใจ
@@ -254,6 +243,18 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
     #    - ก่อนบรรทัดแรกของ Initial_climb ให้หาช่วงที่ altitude = 0 และค่า track/Direction ซ้ำกัน > 3 แถว
     #      ช่วงนั้นจะถูกกำหนดให้เป็น Takeoff และช่วงก่อนหน้าให้เป็น Taxi_out
     phases = _apply_takeoff_from_initial_climb(phases, altitude, track)
+
+    # 6b. กำหนด Taxi_out เป็นทุกแถวก่อนเริ่ม Takeoff
+    if "Takeoff" in phases.values:
+        first_takeoff_idx_arr = np.where(phases == "Takeoff")[0]
+        if len(first_takeoff_idx_arr) > 0:
+            first_takeoff_idx = int(first_takeoff_idx_arr[0])
+            if first_takeoff_idx > 0:
+                phases.iloc[:first_takeoff_idx] = "Taxi_out"
+    else:
+        # ถ้าไม่พบ Takeoff ให้กำหนดช่วงก่อนบิน (ก่อน first_flying_idx) เป็น Taxi_out
+        if first_flying_idx is not None and first_flying_idx > 0:
+            phases.iloc[:first_flying_idx] = "Taxi_out"
 
     # 7. ปรับปรุง phases ให้ต่อเนื่องและสมเหตุสมผล
     phases = _refine_flight_phases(phases, altitude, cruise_altitude, cruise_start_idx, cruise_end_idx)
@@ -411,12 +412,16 @@ def _apply_takeoff_from_initial_climb(
         if ic_first_idx <= 0:
             continue
 
-        target_track = track.iloc[ic_first_idx]
+        # ใช้ Direction ของแถวก่อนช่วง Initial_climb เป็นเกณฑ์
+        ref_idx = ic_first_idx - 1
+        if ref_idx < 0:
+            continue
+        target_track = track.iloc[ref_idx]
         if pd.isna(target_track):
             continue
 
-        # ไล่ย้อนขึ้นไปหาช่วง Takeoff candidate
-        j = ic_first_idx - 1
+        # ไล่ย้อนขึ้นไปหาช่วง Takeoff candidate โดยเช็คเฉพาะ altitude == 0 และทิศทาง
+        j = ref_idx
         count = 0
         while j >= 0:
             alt_j = altitude.iloc[j]
@@ -424,6 +429,7 @@ def _apply_takeoff_from_initial_climb(
             if alt_j != 0 or pd.isna(trk_j):
                 break
             if abs(trk_j - target_track) > track_tolerance_deg:
+                # เจอแถวที่ทิศทางต่างเกิน tolerance -> หยุดย้อน (แถวนี้และก่อนหน้าจะเป็น Taxi_out)
                 break
             count += 1
             j -= 1
@@ -440,8 +446,7 @@ def _apply_takeoff_from_initial_climb(
             for k in range(0, takeoff_start):
                 if refined.iloc[k] == "Takeoff":
                     refined.iloc[k] = "Taxi_out"
-
-        return refined
+    return refined
 
 
 def _refine_landing_taxi_in_by_direction(
@@ -510,37 +515,62 @@ def _refine_landing_taxi_in_by_direction(
                             refined.iloc[prev_idx] = "Taxi_in"
     
     # ตรวจสอบแถวที่ altitude = 0 ft ทั้งหมด
+    # สร้างรายการแถว ground ต่อเนื่องตั้งแต่ first_zero_after_flight_idx
+    ground_indices = []
     for i in range(first_zero_after_flight_idx, len(altitude)):
         alt = altitude.iloc[i]
         is_ground = (alt == 0) or (pd.isna(alt) == False and alt < 10)
-        
         if not is_ground:
-            # ถ้าไม่ใช่ ground อีกต่อไป ให้หยุด
             break
-        
-        # ตรวจสอบว่า phase ก่อนหน้าเป็น Approach/Descent/Landing หรือไม่
-        if i > 0:
-            prev_phase = refined.iloc[i-1]
-            if prev_phase not in ["Approach", "Descent", "Landing"]:
-                # ถ้า phase ก่อนหน้าไม่ใช่ Approach/Descent/Landing อาจไม่ใช่ช่วง Landing
-                continue
-        
-        # ตรวจสอบ Direction
+        ground_indices.append(i)
+
+    if not ground_indices:
+        return refined
+
+    # ตรวจสอบว่าแถวก่อนหน้า block เป็น Approach/Descent/Landing หากมี
+    before_idx = ground_indices[0] - 1
+    prev_phase_ok = False
+    if before_idx >= 0:
+        prev_phase = refined.iloc[before_idx]
+        if prev_phase in ["Approach", "Descent", "Landing"]:
+            prev_phase_ok = True
+
+    # คำนวณความต่างทิศทางของแต่ละแถวใน block เทียบกับ ref_direction
+    diffs = []
+    for i in ground_indices:
         curr_direction = track.iloc[i]
         if pd.isna(curr_direction):
+            diffs.append(float('inf'))
             continue
-        
-        # คำนวณความต่างของ Direction (จัดการกรณีที่ Direction วนรอบ 0-360)
         diff = abs(curr_direction - ref_direction)
         if diff > 180:
             diff = 360 - diff
-        
-        if diff <= tolerance_deg:
-            # Direction ใกล้เคียงกับ ref_direction → Landing
-            refined.iloc[i] = "Landing"
-        else:
-            # Direction ต่างจาก ref_direction เกิน tolerance → Taxi_in
+        diffs.append(diff)
+
+    # ถ้าแถวก่อนหน้าไม่ใช่ Approach/Descent/Landing ให้พิจารณาเฉพาะการกำหนด Taxi_in
+    if not prev_phase_ok:
+        for i in ground_indices:
             refined.iloc[i] = "Taxi_in"
+        return refined
+
+    # หา index แรกที่ diff > tolerance => เริ่มเป็น Taxi_in ที่ตำแหน่งนั้น
+    first_bad = None
+    for idx, d in enumerate(diffs):
+        if d > tolerance_deg:
+            first_bad = idx
+            break
+
+    if first_bad is None:
+        # ทั้งหมดใกล้เคียง → ทั้งหมดเป็น Landing
+        for i in ground_indices:
+            refined.iloc[i] = "Landing"
+    else:
+        # แถวก่อน first_bad เป็น Landing
+        for j in range(0, first_bad):
+            refined.iloc[ground_indices[j]] = "Landing"
+        # ตั้งแต่ first_bad เป็นต้นไปเป็น Taxi_in
+        for j in range(first_bad, len(ground_indices)):
+            refined.iloc[ground_indices[j]] = "Taxi_in"
     
     return refined
 
