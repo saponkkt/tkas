@@ -16,35 +16,31 @@
         "Cf3": 11.031,
         "Cf4": 54252,
         "Cfcr": 0.93,
+        "CD0,deltaLDG":  0.0235,
         "CR": {
             "config": "clean",
             "CD0": 0.0235,
-            "CD2": 0.0445,
-            "CD0,deltaLDG":  0.0
+            "CD2": 0.0445
         },
         "IC": {
             "config": "1",
             "CD0": 0.027,
-            "CD2": 0.0441,
-            "CD0,deltaLDG":  0.0
+            "CD2": 0.0441
         },
         "TO": {
             "config": "1+f",
             "CD0": 0.0333,
-            "CD2": 0.0428,
-            "CD0,deltaLDG":  0.0
+            "CD2": 0.0428
         },
         "AP": {
             "config": "2",
             "CD0": 0.0477,
-            "CD2": 0.0423,
-            "CD0,deltaLDG":  0.0
+            "CD2": 0.0423
         },
         "LD": {
             "config": "full",
             "CD0": 0.0653,
-            "CD2": 0.0412,
-            "CD0,deltaLDG":  0.0235
+            "CD2": 0.0412
         },
         "Cruise": {
             "K": 0.044,
@@ -83,35 +79,31 @@
         "Cf3": 9.134,
         "Cf4": 79668,
         "Cfcr": 0.95423,
+        "CD0,deltaLDG":  0.0312,
         "CR": {
             "config": "clean",
             "CD0": 0.025149,
-            "CD2": 0.036138,
-            "CD0,deltaLDG":  0.0
+            "CD2": 0.036138
         },
         "IC": {
             "config": "1",
             "CD0": 0.0242,
-            "CD2": 0.0469,
-            "CD0,deltaLDG":  0.0
+            "CD2": 0.0469
         },
         "TO": {
             "config": "1+f",
             "CD0": 0.0393,
-            "CD2": 0.0396,
-            "CD0,deltaLDG":  0.0
+            "CD2": 0.0396
         },
         "AP": {
             "config": "2",
             "CD0": 0.0456,
-            "CD2": 0.0381,
-            "CD0,deltaLDG":  0.0
+            "CD2": 0.0381
         },
         "LD": {
             "config": "full",
             "CD0": 0.0838,
-            "CD2": 0.0371,
-            "CD0,deltaLDG":  0.0312
+            "CD2": 0.0371
         },
         "Cruise": {
             "K": 0.039,
