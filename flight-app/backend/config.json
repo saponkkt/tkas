@@ -46,17 +46,17 @@
             "CD2": 0.0412,
             "CD0,deltaLDG":  0.0235
         },
-        "cruise": {
+        "Cruise": {
             "K": 0.044,
             "e": 0.775,
             "flap_angle": 0.0
         },
-        "initial_climb": {
+        "Initial_climb": {
             "K": 0.041,
             "e": 0.827,
             "flap_angle": 20
         },
-        "landing": {
+        "Landing": {
             "K": 0.037,
             "e": 0.905,
             "flap_angle": 50
@@ -113,17 +113,17 @@
             "CD2": 0.0371,
             "CD0,deltaLDG":  0.0312
         },
-        "cruise": {
+        "Cruise": {
             "K": 0.039,
             "e": 0.798,
             "flap_angle": 0.0
         },
-        "initial_climb": {
+        "Initial_climb": {
             "K": 0.036,
             "e": 0.850,
             "flap_angle": 20
         },
-        "landing": {
+        "Landing": {
             "K": 0.024,
             "e": 0.602,
             "flap_angle": 40
