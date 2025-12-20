@@ -20,19 +20,20 @@ def compute_eta_kg_per_min_per_kN(
     - หน่วย Cf1, Cf2 สมมติให้สอดคล้องกับสูตรที่กำหนด
     - คืนค่าเป็น Series ที่ index ตรงกับ df เดิม (ชื่อคอลัมน์: "eta_kg_per_min_per_kN")
     """
-    # ดึง Cf1, Cf2 ต่อแถวจาก config ตามชนิดเครื่องบิน
-    cf1 = pd.to_numeric(get_config_param_series(df, "Cf1", type_col=type_col), errors="coerce")
-    cf2 = pd.to_numeric(get_config_param_series(df, "Cf2", type_col=type_col), errors="coerce")
+    try:
+        cf1 = pd.to_numeric(get_config_param_series(df, "Cf1", type_col=type_col), errors="coerce")
+        cf2 = pd.to_numeric(get_config_param_series(df, "Cf2", type_col=type_col), errors="coerce")
+        tas = pd.to_numeric(df.get(tas_col), errors="coerce")
 
-    # ความเร็ว TAS จากคอลัมน์ใน DataFrame
-    tas = pd.to_numeric(df.get(tas_col), errors="coerce")
+        with pd.option_context("mode.use_inf_as_na", True):
+            eta = cf1 * (1.0 + (tas / cf2))
 
-    # คำนวณ eta โดยจัดการกรณี cf2 = 0 หรือ NaN ให้กลายเป็น NaN อัตโนมัติ
-    with pd.option_context("mode.use_inf_as_na", True):
-        eta = cf1 * (1.0 + (tas / cf2))
-
-    eta.name = "eta_kg_per_min_per_kN"
-    return eta
+        eta.name = "eta_kg_per_min_per_kN"
+        return eta
+    except Exception:
+        # return NaN series aligned with df
+        s = pd.Series([pd.NA] * len(df), index=df.index, name="eta_kg_per_min_per_kN")
+        return s
 
 
 def add_eta_column(
@@ -64,14 +65,18 @@ def compute_fnom_kg_per_s(
     - `eta_kg_per_min_per_kN` มาจากคอลัมน์ eta ที่คำนวณจาก `compute_eta_kg_per_min_per_kN`
     - `Thrust_N` มาจากผลการคำนวณในไฟล์ thrust (คอลัมน์ชื่อเดียวกันใน DataFrame)
     """
-    eta = pd.to_numeric(df.get(eta_col), errors="coerce")
-    thrust = pd.to_numeric(df.get(thrust_col), errors="coerce")
+    try:
+        eta = pd.to_numeric(df.get(eta_col), errors="coerce")
+        thrust = pd.to_numeric(df.get(thrust_col), errors="coerce")
 
-    with pd.option_context("mode.use_inf_as_na", True):
-        fnom = eta * thrust * 1e-3 / 60.0
+        with pd.option_context("mode.use_inf_as_na", True):
+            fnom = eta * thrust * 1e-3 / 60.0
 
-    fnom.name = "fnom_kg_per_s"
-    return fnom
+        fnom.name = "fnom_kg_per_s"
+        return fnom
+    except Exception:
+        s = pd.Series([pd.NA] * len(df), index=df.index, name="fnom_kg_per_s")
+        return s
 
 
 def add_fnom_column(
@@ -113,15 +118,19 @@ def compute_fmin_kg_per_s(
     - `Cf3`, `Cf4` อ่านจาก `config.json` ตามชนิดเครื่องบิน (type_col)
     - `altitude` คือคอลัมน์ความสูง (หน่วย ft) ใน DataFrame
     """
-    cf3 = pd.to_numeric(get_config_param_series(df, "Cf3", type_col=type_col), errors="coerce")
-    cf4 = pd.to_numeric(get_config_param_series(df, "Cf4", type_col=type_col), errors="coerce")
-    alt = pd.to_numeric(df.get(alt_col), errors="coerce")
+    try:
+        cf3 = pd.to_numeric(get_config_param_series(df, "Cf3", type_col=type_col), errors="coerce")
+        cf4 = pd.to_numeric(get_config_param_series(df, "Cf4", type_col=type_col), errors="coerce")
+        alt = pd.to_numeric(df.get(alt_col), errors="coerce")
 
-    with pd.option_context("mode.use_inf_as_na", True):
-        fmin = cf3 * (1.0 - (alt / cf4)) / 60.0
+        with pd.option_context("mode.use_inf_as_na", True):
+            fmin = cf3 * (1.0 - (alt / cf4)) / 60.0
 
-    fmin.name = "fmin_kg_per_s"
-    return fmin
+        fmin.name = "fmin_kg_per_s"
+        return fmin
+    except Exception:
+        s = pd.Series([pd.NA] * len(df), index=df.index, name="fmin_kg_per_s")
+        return s
 
 
 def add_fmin_column(
@@ -149,14 +158,18 @@ def compute_fapld_kg_per_s(
 
     fapld_kg/s = max(fnom_kg_per_s, fmin_kg_per_s) ต่อแถว
     """
-    fnom = pd.to_numeric(df.get(fnom_col), errors="coerce")
-    fmin = pd.to_numeric(df.get(fmin_col), errors="coerce")
+    try:
+        fnom = pd.to_numeric(df.get(fnom_col), errors="coerce")
+        fmin = pd.to_numeric(df.get(fmin_col), errors="coerce")
 
-    with pd.option_context("mode.use_inf_as_na", True):
-        fapld = pd.concat([fnom, fmin], axis=1).max(axis=1)
+        with pd.option_context("mode.use_inf_as_na", True):
+            fapld = pd.concat([fnom, fmin], axis=1).max(axis=1)
 
-    fapld.name = "fapld_kg_per_s"
-    return fapld
+        fapld.name = "fapld_kg_per_s"
+        return fapld
+    except Exception:
+        s = pd.Series([pd.NA] * len(df), index=df.index, name="fapld_kg_per_s")
+        return s
 
 
 def add_fapld_column(
@@ -214,15 +227,19 @@ def compute_fcr_kg_per_s(
     - `Thrust_N` มาจากคอลัมน์ใน DataFrame
     - `Cfcr` อ่านจาก `config.json` ตามชนิดเครื่องบิน (type_col)
     """
-    eta = pd.to_numeric(df.get(eta_col), errors="coerce")
-    thrust = pd.to_numeric(df.get(thrust_col), errors="coerce")
-    cfcr = pd.to_numeric(get_config_param_series(df, "Cfcr", type_col=type_col), errors="coerce")
+    try:
+        eta = pd.to_numeric(df.get(eta_col), errors="coerce")
+        thrust = pd.to_numeric(df.get(thrust_col), errors="coerce")
+        cfcr = pd.to_numeric(get_config_param_series(df, "Cfcr", type_col=type_col), errors="coerce")
 
-    with pd.option_context("mode.use_inf_as_na", True):
-        fcr = eta * thrust * cfcr * 1e-3 / 60.0
+        with pd.option_context("mode.use_inf_as_na", True):
+            fcr = eta * thrust * cfcr * 1e-3 / 60.0
 
-    fcr.name = "fcr_kg_per_s"
-    return fcr
+        fcr.name = "fcr_kg_per_s"
+        return fcr
+    except Exception:
+        s = pd.Series([pd.NA] * len(df), index=df.index, name="fcr_kg_per_s")
+        return s
 
 
 def add_fcr_column(
@@ -266,36 +283,36 @@ def compute_fuel_kg_per_s(
     3. Cruise → ใช้ fcr_kg_per_s
     4. Approach, Landing → ใช้ fapld_kg_per_s
     """
-    phases = df.get(phase_col)
-    if phases is None:
-        # ถ้าไม่มี phase column ให้คืน NaN ทั้งหมด
-        return pd.Series([pd.NA] * len(df), index=df.index, name="Fuel_kg_per_s")
+    try:
+        phases = df.get(phase_col)
+        if phases is None:
+            return pd.Series([pd.NA] * len(df), index=df.index, name="Fuel_kg_per_s")
 
-    fnom = pd.to_numeric(df.get(fnom_col), errors="coerce")
-    fmin = pd.to_numeric(df.get(fmin_col), errors="coerce")
-    fcr = pd.to_numeric(df.get(fcr_col), errors="coerce")
-    fapld = pd.to_numeric(df.get(fapld_col), errors="coerce")
+        fnom = pd.to_numeric(df.get(fnom_col), errors="coerce")
+        fmin = pd.to_numeric(df.get(fmin_col), errors="coerce")
+        fcr = pd.to_numeric(df.get(fcr_col), errors="coerce")
+        fapld = pd.to_numeric(df.get(fapld_col), errors="coerce")
 
-    fuel = pd.Series([pd.NA] * len(df), index=df.index, dtype=float)
+        import numpy as _np
+        fuel = pd.Series([_np.nan] * len(df), index=df.index, dtype=float)
 
-    # 1. Taxi_out, Descent, Taxi_in → fmin
-    mask_taxi_descent = phases.isin(["Taxi_out", "Descent", "Taxi_in"])
-    fuel.loc[mask_taxi_descent] = fmin.loc[mask_taxi_descent]
+        mask_taxi_descent = phases.isin(["Taxi_out", "Descent", "Taxi_in"])
+        fuel.loc[mask_taxi_descent] = fmin.loc[mask_taxi_descent]
 
-    # 2. Takeoff, Initial_climb, Climb → fnom
-    mask_climb = phases.isin(["Takeoff", "Initial_climb", "Climb"])
-    fuel.loc[mask_climb] = fnom.loc[mask_climb]
+        mask_climb = phases.isin(["Takeoff", "Initial_climb", "Climb"])
+        fuel.loc[mask_climb] = fnom.loc[mask_climb]
 
-    # 3. Cruise → fcr
-    mask_cruise = phases == "Cruise"
-    fuel.loc[mask_cruise] = fcr.loc[mask_cruise]
+        mask_cruise = phases == "Cruise"
+        fuel.loc[mask_cruise] = fcr.loc[mask_cruise]
 
-    # 4. Approach, Landing → fapld
-    mask_approach_landing = phases.isin(["Approach", "Landing"])
-    fuel.loc[mask_approach_landing] = fapld.loc[mask_approach_landing]
+        mask_approach_landing = phases.isin(["Approach", "Landing"])
+        fuel.loc[mask_approach_landing] = fapld.loc[mask_approach_landing]
 
-    fuel.name = "Fuel_kg_per_s"
-    return fuel
+        fuel.name = "Fuel_kg_per_s"
+        return fuel
+    except Exception:
+        s = pd.Series([pd.NA] * len(df), index=df.index, name="Fuel_kg_per_s")
+        return s
 
 
 def add_fuel_column(
@@ -396,14 +413,18 @@ def compute_fuel_at_time_kg(
     - `Fuel_kg_per_s` คืออัตราการใช้เชื้อเพลิงต่อวินาที
     - `delta_t (s)` คือช่วงเวลาระหว่างจุดข้อมูล (หน่วยวินาที) จากไฟล์ variable_mass.py
     """
-    fuel_rate = pd.to_numeric(df.get(fuel_rate_col), errors="coerce")
-    delta_t = pd.to_numeric(df.get(delta_t_col), errors="coerce")
+    try:
+        fuel_rate = pd.to_numeric(df.get(fuel_rate_col), errors="coerce")
+        delta_t = pd.to_numeric(df.get(delta_t_col), errors="coerce")
 
-    with pd.option_context("mode.use_inf_as_na", True):
-        fuel_at_time = fuel_rate * delta_t
+        with pd.option_context("mode.use_inf_as_na", True):
+            fuel_at_time = fuel_rate * delta_t
 
-    fuel_at_time.name = "Fuel_at_time_kg"
-    return fuel_at_time
+        fuel_at_time.name = "Fuel_at_time_kg"
+        return fuel_at_time
+    except Exception:
+        s = pd.Series([pd.NA] * len(df), index=df.index, name="Fuel_at_time_kg")
+        return s
 
 
 def add_fuel_at_time_column(
@@ -456,19 +477,20 @@ def compute_fuel_sum_with_time_kg(
     โดย:
     - `Fuel_at_time_kg` คือคอลัมน์ที่คำนวณจาก `compute_fuel_at_time_kg`
     """
-    fuel_at_time = pd.to_numeric(df.get(fuel_at_time_col), errors="coerce")
+    try:
+        fuel_at_time = pd.to_numeric(df.get(fuel_at_time_col), errors="coerce")
 
-    # คำนวณ cumulative sum โดยใช้ cumsum()
-    # แทนที่ NaN ด้วย 0 เพื่อให้การบวกสะสมทำงานได้ถูกต้อง
-    fuel_at_time_filled = fuel_at_time.fillna(0)
-    fuel_sum = fuel_at_time_filled.cumsum()
+        fuel_at_time_filled = fuel_at_time.fillna(0)
+        fuel_sum = fuel_at_time_filled.cumsum()
 
-    # ถ้าแถวแรกเป็น NaN ให้ตั้งเป็น 0
-    if len(fuel_sum) > 0 and pd.isna(fuel_at_time.iloc[0]):
-        fuel_sum.iloc[0] = 0
+        if len(fuel_sum) > 0 and pd.isna(fuel_at_time.iloc[0]):
+            fuel_sum.iloc[0] = 0
 
-    fuel_sum.name = "Fuel_sum_with_time_kg"
-    return fuel_sum
+        fuel_sum.name = "Fuel_sum_with_time_kg"
+        return fuel_sum
+    except Exception:
+        s = pd.Series([pd.NA] * len(df), index=df.index, name="Fuel_sum_with_time_kg")
+        return s
 
 
 def add_fuel_sum_with_time_column(
