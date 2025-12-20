@@ -119,8 +119,8 @@ def compute_thr_max_climb_ISA(df: pd.DataFrame, type_col: Optional[str] = None) 
     return pd.Series(val, index=df.index)
 
 
-def compute_delta_temp(df: pd.DataFrame, temp_col: str = "Temperature_K", ref: float = 288.15) -> pd.Series:
-    """Compute delta_temp = Temperature_K - ref for each row and return a Series.
+def compute_delta_temp(df: pd.DataFrame, temp_col: str = "temperature_K", ref: float = 288.15) -> pd.Series:
+    """Compute delta_temp = temperature_K - ref for each row and return a Series.
 
     Returns pd.NA for missing/non-numeric temperature values.
     """
@@ -131,10 +131,10 @@ def compute_delta_temp(df: pd.DataFrame, temp_col: str = "Temperature_K", ref: f
         return pd.Series([pd.NA] * len(df), index=df.index)
 
 
-def compute_delta_temp_eff(df: pd.DataFrame, type_col: Optional[str] = None, temp_col: str = "Temperature_K", ref: float = 288.15) -> pd.Series:
+def compute_delta_temp_eff(df: pd.DataFrame, type_col: Optional[str] = None, temp_col: str = "temperature_K", ref: float = 288.15) -> pd.Series:
     """Compute delta_temp_eff = delta_temp - CTc4 per-row.
 
-    - delta_temp = Temperature_K - ref
+    - delta_temp = temperature_K - ref
     - CTc4 is read from config.json for the resolved aircraft type
     Returns a pandas Series aligned with df index (pd.NA where unavailable).
     """
@@ -146,7 +146,7 @@ def compute_delta_temp_eff(df: pd.DataFrame, type_col: Optional[str] = None, tem
     return delta_temp - ct4
 
 
-def compute_thr_max_climb(df: pd.DataFrame, type_col: Optional[str] = None, temp_col: str = "Temperature_K", ref: float = 288.15) -> pd.Series:
+def compute_thr_max_climb(df: pd.DataFrame, type_col: Optional[str] = None, temp_col: str = "temperature_K", ref: float = 288.15) -> pd.Series:
     """Compute Thr_max_climb per-row.
 
     Formula: Thr_max_climb = Thr_max_climb_ISA * (1 - CTc5 * delta_temp_eff)
@@ -167,7 +167,7 @@ def compute_thr_max_climb(df: pd.DataFrame, type_col: Optional[str] = None, temp
     return thr_isa * (1.0 - ct5 * delta_eff)
 
 
-def compute_thrust_N(df: pd.DataFrame, type_col: Optional[str] = None, phase_col: str = "flight_phase", alt_col: str = "altitude", temp_col: str = "Temperature_K", ref: float = 288.15) -> pd.Series:
+def compute_thrust_N(df: pd.DataFrame, type_col: Optional[str] = None, phase_col: str = "flight_phase", alt_col: str = "altitude", temp_col: str = "temperature_K", ref: float = 288.15) -> pd.Series:
     """Compute Thrust_N per-row according to flight phase and config coefficients.
 
     Rules (per your specification):
@@ -192,28 +192,7 @@ def compute_thrust_N(df: pd.DataFrame, type_col: Optional[str] = None, phase_col
         except Exception:
             phases = pd.Series([pd.NA] * len(df), index=df.index)
 
-    # ensure temperature column exists (accept common variants)
-    if temp_col not in df.columns:
-        if "Temperature_K" in df.columns:
-            temp_col = "Temperature_K"
-        elif "temperature_K" in df.columns:
-            temp_col = "temperature_K"
-
-    # compute intermediate values and attach as columns for inspection
-    thr_isa = compute_thr_max_climb_ISA(df, type_col=type_col)
-    delta_temp = compute_delta_temp(df, temp_col=temp_col, ref=ref)
-    delta_temp_eff = compute_delta_temp_eff(df, type_col=type_col, temp_col=temp_col, ref=ref)
     thr_max = compute_thr_max_climb(df, type_col=type_col, temp_col=temp_col, ref=ref)
-
-    # attach to DataFrame (preserve alignment). These columns are helpful for debugging and output.
-    try:
-        df["Thr_max_climb_ISA"] = thr_isa
-        df["delta_temp"] = delta_temp
-        df["delta_temp_eff"] = delta_temp_eff
-        df["Thr_max_climb"] = thr_max
-    except Exception:
-        # non-fatal: continue even if assignment fails
-        pass
 
     # load coefficients per-row (numeric where appropriate)
     CTcr = pd.to_numeric(get_config_param_series(df, "CTcr", type_col=type_col), errors="coerce")
