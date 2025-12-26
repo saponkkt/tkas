@@ -8,6 +8,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
+import sys
 
 # แยกเวลา จากคอลัมน์ UTC column N
 
@@ -58,15 +59,22 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
     # หารด้วย delta_t (s) แต่ต้องระวังการหารด้วยศูนย์
     delta_t = df_out["delta_t (s)"].replace(0, pd.NA)  # แทนที่ 0 ด้วย NA เพื่อหลีกเลี่ยงการหารด้วยศูนย์
     df_out["a_m/s^2"] = delta_tas / delta_t
-    
+    # แทนค่าอนันต์ด้วย NA และตั้งแถวแรกเป็น 0.0 (ไม่มีแถวก่อนหน้า)
+    df_out["a_m/s^2"] = df_out["a_m/s^2"].replace([np.inf, -np.inf], pd.NA)
+    if len(df_out) > 0:
+        try:
+            df_out.at[df_out.index[0], "a_m/s^2"] = 0.0
+        except Exception:
+            pass
+
     # คำนวณความหนาแน่นอากาศ Density = Pressure_Pa / (R * temperature_K)
     # R = 287.05 J/(kg·K) (gas constant สำหรับอากาศ)
     R_air = 287.05  # J/(kg·K)
-    if "temperature_K" in df_out.columns:
-        temperature_K = pd.to_numeric(df_out["temperature_K"], errors="coerce")
+    if "Temperature_K" in df_out.columns:
+        temperature_K = pd.to_numeric(df_out["Temperature_K"], errors="coerce")
         df_out["Density"] = df_out["Pressure_Pa"] / (R_air * temperature_K)
     else:
-        # ถ้าไม่มีคอลัมน์ temperature_K ให้สร้างคอลัมน์ว่าง
+        # ถ้าไม่มีคอลัมน์ Temperature_K ให้สร้างคอลัมน์ว่าง
         df_out["Density"] = pd.NA
 
     # เพิ่มคอลัมน์ S_m^2: เลือก wing area ตาม flight_phase และชนิดเครื่องบิน
@@ -269,10 +277,58 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
     df_out["CD2"] = df_out.apply(_select_cd2, axis=1)
     
     # เพิ่มคอลัมน์ CD0,deltaLDG: เลือกค่า CD0,deltaLDG จาก section ที่เหมาะสมใน config.json ตาม flight_phase
+    # Compute integer positions for robust range checks (0..N-1)
+    df_out["_pos"]= np.arange(len(df_out))
+    alt_numeric = pd.to_numeric(df_out.get("altitude"), errors="coerce").fillna(-9999)
+    phases_arr = df_out.get("flight_phase").astype(str).fillna("").to_numpy()
+
+    # last position of Takeoff (if any)
+    takeoff_pos = np.where(phases_arr == "Takeoff")[0]
+    last_takeoff_pos = int(takeoff_pos.max()) if takeoff_pos.size > 0 else None
+
+    # last position of Landing (if any)
+    landing_pos = np.where(phases_arr == "Landing")[0]
+    last_landing_pos = int(landing_pos.max()) if landing_pos.size > 0 else None
+
+    # first position where altitude <= 1500 ft AND phase == 'Landing' (if any)
+    landing_positions = np.where(phases_arr == "Landing")[0]
+    first_alt_le1500_pos = None
+    if landing_positions.size > 0:
+        # consider only landing positions when searching for the 1500-ft threshold
+        landing_alts = alt_numeric[landing_positions]
+        idxs = np.where(landing_alts <= 1500)[0]
+        if idxs.size > 0:
+            # map back to global positions
+            first_alt_le1500_pos = int(landing_positions[idxs.min()])
+
+    # last position of Taxi_in (if any)
+    taxi_in_pos = np.where(phases_arr == "Taxi_in")[0]
+    last_taxi_in_pos = int(taxi_in_pos.max()) if taxi_in_pos.size > 0 else None
+
     def _select_cd0_deltaLDG(row: pd.Series) -> object:
+        # Only assign CD0,deltaLDG for two ranges:
+        # 1) from the first row up to last Takeoff row (inclusive)
+        # 2) from the first row with altitude >=1500 ft up to last Landing row (inclusive)
+        pos = int(row.get("_pos", -1))
+
+        in_range = False
+        if last_takeoff_pos is not None and pos <= last_takeoff_pos:
+            in_range = True
+        # second range: from first row in Landing where altitude <=1500 ft
+        # up to the last Taxi_in row (if present). If Taxi_in not present,
+        # fall back to last Landing position.
+        second_range_end = last_taxi_in_pos if last_taxi_in_pos is not None else last_landing_pos
+        if first_alt_le1500_pos is not None and second_range_end is not None and pos >= first_alt_le1500_pos and pos <= second_range_end:
+            in_range = True
+
+        if not in_range:
+            # outside allowed ranges -> return 0.0 per request
+            return 0.0
+
+        # proceed with same lookup as before when in one of the allowed ranges
         phase = row.get("flight_phase")
-        phase_l = str(phase).lower() if not pd.isna(phase) else ""
-        normalized = phase_l.replace(" ", "_")
+        phase_s = str(phase) if not pd.isna(phase) else ""
+        normalized = phase_s.strip().replace(" ", "_").lower()
 
         # determine type key
         type_val = None
@@ -282,8 +338,9 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
 
         if type_key is None or type_key not in config:
             return pd.NA
-
-        section = phase_to_section.get(normalized, "CR")
+        
+        phase_to_section_lower = {k.lower(): v for k, v in phase_to_section.items()}
+        section = phase_to_section_lower.get(normalized, "CR")
         try:
             sec_obj = config[type_key].get(section, {})
             val = sec_obj.get("CD0,deltaLDG") if isinstance(sec_obj, dict) else None
@@ -291,72 +348,89 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
                 # fallback: some configs might have CD0,deltaLDG at top level
                 val = config[type_key].get("CD0,deltaLDG")
             if val is None:
-                return pd.NA
-            return float(val)
+                # missing config value -> use 0.0 per request
+                return 0.0
+            try:
+                return float(val)
+            except Exception:
+                return 0.0
         except Exception:
             return pd.NA
 
     df_out["CD0,deltaLDG"] = df_out.apply(_select_cd0_deltaLDG, axis=1)
+    # cleanup helper column
+    try:
+        df_out.drop(columns=["_pos"], inplace=True)
+    except Exception:
+        pass
 
-    # เพิ่มคอลัมน์ K: เลือกค่า K ตาม flight_phase และชนิดเครื่องบิน
-    # กฏการแมป (ตามที่ผู้ใช้ระบุ):
-    # taxi_out -> CR
-    # takeoff -> IC
-    # initial_climb -> IC
-    # climb -> CR
-    # cruise -> CR
-    # descent -> CR
-    # approach -> CR
-    # landing -> LD
-    # taxi_in -> CR
-    k_phase_to_section = {
-        "taxi_out": "CR",
-        "takeoff": "IC",
-        "initial_climb": "IC",
-        "climb": "CR",
-        "cruise": "CR",
-        "descent": "CR",
-        "approach": "CR",
-        "landing": "LD",
-        "taxi_in": "CR",
-    }
+        # เพิ่มคอลัมน์ K: เลือกค่า K ตาม flight_phase และชนิดเครื่องบิน
+        # กฏการแมป (ตามที่ผู้ใช้ระบุ):
+        # taxi_out -> CR
+        # takeoff -> IC
+        # initial_climb -> IC
+        # climb -> CR
+        # cruise -> CR
+        # descent -> CR
+        # approach -> CR
+        # landing -> LD
+        # taxi_in -> CR
+        k_phase_to_section = {
+            "Taxi_out": "CR",
+            "Takeoff": "IC",
+            "Initial_climb": "IC",
+            "Climb": "CR",
+            "Cruise": "CR",
+            "Descent": "CR",
+            "Approach": "CR",
+            "Landing": "LD",
+            "Taxi_in": "CR"
+        }
 
-    def _select_k(row: pd.Series) -> object:
-        phase = row.get("flight_phase")
-        phase_l = str(phase).lower() if not pd.isna(phase) else ""
-        normalized = phase_l.replace(" ", "_")
+        def _select_k(row: pd.Series) -> object:
+            phase = row.get("flight_phase")
+            phase_s = str(phase) if not pd.isna(phase) else ""
+            normalized = phase_s.strip().replace(" ", "_").lower()
 
-        # determine type key
-        type_val = None
-        if type_col is not None:
-            type_val = row.get(type_col)
-        type_key = _resolve_type_key(type_val) if type_val is not None else None
+            # determine type key
+            type_val = None
+            if type_col is not None:
+                type_val = row.get(type_col)
+            type_key = _resolve_type_key(type_val) if type_val is not None else None
 
-        if type_key is None or type_key not in config:
-            return pd.NA
-        section = k_phase_to_section.get(normalized, "CR")
-        # try several candidate section names (uppercase and common lowercase names)
-        alt_map = {"CR": "cruise", "IC": "initial_climb", "LD": "landing", "TO": "takeoff", "AP": "approach"}
-        candidates = [section, section.lower(), alt_map.get(section)]
-        for sec in candidates:
-            if not sec:
-                continue
-            sec_obj = config[type_key].get(sec)
-            if isinstance(sec_obj, dict) and "K" in sec_obj:
-                try:
-                    return float(sec_obj["K"])
-                except Exception:
-                    return pd.NA
-        # fallback top-level K
-        topk = config[type_key].get("K")
-        if topk is None:
-            return pd.NA
-        try:
-            return float(topk)
-        except Exception:
-            return pd.NA
+            if type_key is None or type_key not in config:
+                return pd.NA
+            
+            # case-insensitive lookup
+            k_phase_to_section_lower = {k.lower(): v for k, v in k_phase_to_section.items()}
+            section = k_phase_to_section_lower.get(normalized, "CR")
+            # Robustly map short section codes to canonical config keys and
+            # perform case-insensitive lookup against config sections.
+            code_to_name = {
+                "CR": "cruise",
+                "IC": "initial_climb",
+                "LD": "landing",
+                "TO": "takeoff",
+                "AP": "approach",
+            }
+            # Build candidate names to search for in the config for this type_key
+            candidates = []
+            # include raw code and common casings
+            candidates.append(section)
+            candidates.append(section.lower())
+            candidates.append(section.upper())
+            # include canonical name if available
+            if section in code_to_name:
+                candidates.append(code_to_name[section])
+                candidates.append(code_to_name[section].lower())
+                candidates.append(code_to_name[section].upper())
 
-    df_out["K"] = df_out.apply(_select_k, axis=1)
+            # Now perform case-insensitive search among the actual config keys
+            cfg_keys = list(config[type_key].keys())
+            cfg_keys_lower = {k.lower(): k for k in cfg_keys}
+            for cand in candidates:
+                if not cand:
+                    continue
 
     # เพิ่มคอลัมน์ ROCD_m/s: rate of climb/descent (m/s)
     # วิธีคำนวณ: (altitude_current - altitude_previous) [ft] -> แปลงเป็น m แล้วหารด้วย delta_t (s)
