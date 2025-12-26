@@ -41,6 +41,27 @@ GFS_RETRY_ATTEMPTS = 3
 GFS_RETRY_DELAY = 5
 
 
+def _is_valid_netcdf(path: str) -> bool:
+    """Quickly validate a NetCDF/HDF5 file by attempting to open it with
+    either netCDF4 or h5py. Returns True if readable, False otherwise.
+    """
+    try:
+        from netCDF4 import Dataset as _Dataset
+
+        d = _Dataset(path, "r")
+        d.close()
+        return True
+    except Exception:
+        try:
+            import h5py
+
+            f = h5py.File(path, "r")
+            f.close()
+            return True
+        except Exception:
+            return False
+
+
 def pressure_hPa_from_alt_ft(alt_ft: float) -> float:
     alt_m = float(alt_ft) * 0.3048
     return 1013.25 * (1 - 0.0065 * alt_m / 288.15) ** 5.255
@@ -237,7 +258,48 @@ def compute_tas_for_dataframe(df: pd.DataFrame, prefer_gfs: bool = True, input_c
                 except Exception:
                     print(f"File not present: {out_nc}")
                 print(traceback.format_exc())
-                ds = None
+
+                # If the file exists but is malformed/corrupted, remove it and
+                # retry the CDS retrieve once. This handles partial/incomplete
+                # downloads which otherwise raise HDF errors when xarray/netCDF4
+                # try to open them.
+                try:
+                    if os.path.exists(out_nc) and not _is_valid_netcdf(out_nc):
+                        print(f"Detected corrupted NetCDF {out_nc}, removing and retrying download")
+                        try:
+                            os.remove(out_nc)
+                        except Exception:
+                            pass
+                        try:
+                            # retry retrieve
+                            c.retrieve(
+                                "reanalysis-era5-pressure-levels",
+                                {
+                                    "product_type": "reanalysis",
+                                    "variable": ["u_component_of_wind", "v_component_of_wind"],
+                                    "pressure_level": ["100", "150", "200", "250", "300", "400", "500", "600", "700", "800", "850", "900", "925", "950", "975", "1000", "1013"],
+                                    "year": str(flight_time.year),
+                                    "month": f"{flight_time.month:02d}",
+                                    "day": f"{flight_time.day:02d}",
+                                    "time": [f"{h:02d}:00" for h in range(24)],
+                                    "format": "netcdf",
+                                },
+                                out_nc,
+                            )
+                            ds = xr.open_dataset(out_nc)
+                            if "valid_time" in ds.dims and "time" not in ds.dims:
+                                ds = ds.rename({"valid_time": "time"})
+                            if "time" in ds.coords and not hasattr(ds.time.dtype, "tz"):
+                                ds["time"] = pd.to_datetime(ds["time"].values).tz_localize("UTC")
+                            source = "era5"
+                        except Exception as e2:
+                            print("Retry after removing corrupted file failed:", e2)
+                            print(traceback.format_exc())
+                            ds = None
+                    else:
+                        ds = None
+                except Exception:
+                    ds = None
         except Exception:
             # fallback to single-level
             try:
@@ -299,7 +361,43 @@ def compute_tas_for_dataframe(df: pd.DataFrame, prefer_gfs: bool = True, input_c
                     except Exception:
                         print(f"File not present: {out_nc}")
                     print(traceback.format_exc())
-                    ds = None
+
+                    # Validate and possibly remove corrupted file, then retry once
+                    try:
+                        if os.path.exists(out_nc) and not _is_valid_netcdf(out_nc):
+                            print(f"Detected corrupted NetCDF {out_nc}, removing and retrying download (single-level)")
+                            try:
+                                os.remove(out_nc)
+                            except Exception:
+                                pass
+                            try:
+                                c.retrieve(
+                                    "reanalysis-era5-single-levels",
+                                    {
+                                        "product_type": "reanalysis",
+                                        "variable": ["10m_u_component_of_wind", "10m_v_component_of_wind"],
+                                        "year": str(flight_time.year),
+                                        "month": f"{flight_time.month:02d}",
+                                        "day": f"{flight_time.day:02d}",
+                                        "time": [f"{h:02d}:00" for h in range(24)],
+                                        "format": "netcdf",
+                                    },
+                                    out_nc,
+                                )
+                                ds = xr.open_dataset(out_nc)
+                                if "valid_time" in ds.dims and "time" not in ds.dims:
+                                    ds = ds.rename({"valid_time": "time"})
+                                if "time" in ds.coords and not hasattr(ds.time.dtype, "tz"):
+                                    ds["time"] = pd.to_datetime(ds["time"].values).tz_localize("UTC")
+                                source = "era5_single"
+                            except Exception as e2:
+                                print("Retry after removing corrupted single-level file failed:", e2)
+                                print(traceback.format_exc())
+                                ds = None
+                        else:
+                            ds = None
+                    except Exception:
+                        ds = None
             except Exception as e:
                 print("ERA5 single-level block failed:", e)
                 print(traceback.format_exc())
