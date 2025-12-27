@@ -459,5 +459,4 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
         df_out["gamma_rad"] = np.arcsin(ratio_clamped)
     except Exception:
         df_out["gamma_rad"] = pd.NA
-
     return df_out
