@@ -84,5 +84,132 @@ def add_P3_column(df: pd.DataFrame) -> pd.DataFrame:
     return df_out
 
 
+def add_mt_column(
+    df: pd.DataFrame,
+    alt_col: str = "altitude",
+    fuel_at_time_col: str = "Fuel_at_time_kg",
+) -> pd.DataFrame:
+    """Return copy of `df` with new `mt` column computed per user spec.
+
+    Rules implemented:
+    1. Find the first row (earliest index) where `altitude` >= 10000. Set `mt` at
+       that row to 0.
+    2. For rows before that row (earlier in the dataframe), compute `mt` by
+       accumulating backwards: mt[i] = mt[i+1] + Fuel_at_time_kg[i+1].
+    3. For rows after that row (later in the dataframe), compute `mt` by
+       subtracting forwards: mt[i] = mt[i-1] - Fuel_at_time_kg[i].
+
+    The function will compute `Fuel_at_time_kg` first if it's missing by
+    delegating to `Fuel.add_fuel_at_time_column` (imported locally to avoid
+    circular imports). Inputs are converted to numeric defensively; infinities
+    are treated as NA and fuel gaps filled with 0 for accumulation.
+    """
+    df_out = df.copy()
+    try:
+        # ensure Fuel_at_time_kg exists
+        if fuel_at_time_col not in df_out.columns:
+            # local import to avoid circular import at module level
+            from Fuel import add_fuel_at_time_column
+
+            df_out = add_fuel_at_time_column(df_out)
+
+        alt = pd.to_numeric(df_out.get(alt_col), errors="coerce")
+        fuel_at_time = pd.to_numeric(df_out.get(fuel_at_time_col), errors="coerce")
+
+        # Treat NA fuel values as 0 for accumulation
+        fuel_filled = fuel_at_time.fillna(0).astype(float)
+
+        n = len(df_out)
+        mt_values = [pd.NA] * n
+
+        # find first position where altitude >= 10000
+        mask = alt >= 10000
+        true_pos = list(mask[mask].index)
+        if len(true_pos) == 0:
+            # no row reaches 10000 — set mt as NA
+            df_out["mt"] = pd.Series([pd.NA] * n, index=df_out.index)
+            return df_out
+
+        # convert index to integer positions
+        pos0 = int(np.where(mask.values)[0][0])
+
+        # set mt at crossing to 0.0
+        mt_arr = np.full(n, np.nan, dtype=float)
+        mt_arr[pos0] = 0.0
+
+        # accumulate backwards: for i = pos0-1 .. 0: mt[i] = mt[i+1] + fuel_at_time[i+1]
+        for i in range(pos0 - 1, -1, -1):
+            mt_arr[i] = mt_arr[i + 1] + float(fuel_filled.iloc[i + 1])
+
+        # accumulate forwards: for i = pos0+1 .. n-1: mt[i] = mt[i-1] - fuel_at_time[i]
+        for i in range(pos0 + 1, n):
+            mt_arr[i] = mt_arr[i - 1] - float(fuel_filled.iloc[i])
+
+        # replace infinities / failed casts with NA
+        mt_series = pd.Series(mt_arr, index=df_out.index, name="mt")
+        mt_series = mt_series.replace([np.inf, -np.inf], pd.NA)
+
+        df_out["mt"] = mt_series
+    except Exception:
+        df_out["mt"] = pd.NA
+
+    return df_out
+
+
+def compute_f2_series(
+    df: pd.DataFrame,
+    p1_col: str = "P1",
+    p2_col: str = "P2",
+    p3_col: str = "P3",
+    mt_col: str = "mt",
+) -> pd.Series:
+    """Compute Series `f2 = P1*(mt)**2 + P2*mt + P3`.
+
+    Defensive: converts inputs to numeric, treats infinities as NA.
+    Returns a Series aligned with df index named `f2`.
+    """
+    try:
+        p1 = pd.to_numeric(df.get(p1_col), errors="coerce")
+        p2 = pd.to_numeric(df.get(p2_col), errors="coerce")
+        p3 = pd.to_numeric(df.get(p3_col), errors="coerce")
+        mt = pd.to_numeric(df.get(mt_col), errors="coerce")
+
+        with pd.option_context("mode.use_inf_as_na", True):
+            f2 = (p1 * (mt ** 2)) + (p2 * mt) + p3
+
+        f2.name = "f2"
+        f2 = f2.replace([np.inf, -np.inf], pd.NA)
+        return f2
+    except Exception:
+        s = pd.Series([pd.NA] * len(df), index=df.index, name="f2")
+        return s
+
+
+def add_f2_column(
+    df: pd.DataFrame,
+    p1_col: str = "P1",
+    p2_col: str = "P2",
+    p3_col: str = "P3",
+    mt_col: str = "mt",
+) -> pd.DataFrame:
+    """Return DataFrame copy with `f2` column.
+
+    If `mt` is missing, attempts to compute it using `add_mt_column`.
+    """
+    df_out = df.copy()
+    try:
+        if mt_col not in df_out.columns:
+            # call local function to compute mt
+            df_out = add_mt_column(df_out)
+
+        df_out["f2"] = compute_f2_series(
+            df_out, p1_col=p1_col, p2_col=p2_col, p3_col=p3_col, mt_col=mt_col
+        )
+    except Exception:
+        df_out["f2"] = pd.NA
+
+    return df_out
+
+
 
 
