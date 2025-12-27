@@ -217,6 +217,8 @@ def compute_sumsq_series(
     alt_col: str = "altitude",
     alt_min: float = 10000.0,
     alt_max: float = 20000.0,
+    phase_col: str = "flight_phase",
+    phase_val: str = "Climb",
 ) -> pd.Series:
     """Compute Series `Sumsq` = sum(f2^2) for rows where alt in [alt_min, alt_max].
 
@@ -232,7 +234,14 @@ def compute_sumsq_series(
         alt = pd.to_numeric(df.get(alt_col), errors="coerce")
         f2 = pd.to_numeric(df.get(f2_col), errors="coerce")
 
-        mask = (alt >= alt_min) & (alt <= alt_max)
+        # build phase mask (only include rows where flight_phase == phase_val)
+        phases = df.get(phase_col)
+        if phases is None:
+            phase_mask = pd.Series([False] * len(df), index=df.index)
+        else:
+            phase_mask = phases == phase_val
+
+        mask = (alt >= alt_min) & (alt <= alt_max) & phase_mask
         selected = f2[mask].dropna().astype(float)
 
         if len(selected) == 0:
@@ -267,6 +276,162 @@ def add_sumsq_column(
         df_out["Sumsq"] = pd.NA
 
     return df_out
+
+
+def optimize_mt0(
+    df: pd.DataFrame,
+    alt_col: str = "altitude",
+    fuel_at_time_col: str = "Fuel_at_time_kg",
+    f2_col: str = "f2",
+    alt_min: float = 10000.0,
+    alt_max: float = 20000.0,
+    phase_col: str = "flight_phase",
+    phase_val: str = "Climb",
+    use_scipy: bool = True,
+):
+    """Optimize mt at the first altitude>=10000 row to minimize Sumsq.
+
+    Returns (df_out, result) where df_out has updated `mt`, `f2`, `Sumsq` and
+    `result` contains the optimized mt0 value and objective value.
+
+    Strategy:
+    - Find first position pos0 where altitude >= 10000.
+    - Treat mt[pos0] as the single optimization variable `mt0`.
+    - Given mt0, rebuild full `mt` array by accumulating fuel (backwards and
+      forwards) using the same rules as `add_mt_column` but with mt[pos0]=mt0.
+    - Compute `f2` and `Sumsq` (restricted to phase==phase_val and alt range).
+    - Minimize Sumsq over mt0 using `scipy.optimize.minimize_scalar` if
+      available and requested; otherwise use a grid + refinement search.
+    """
+    df_in = df.copy()
+    # ensure fuel_at_time exists
+    if fuel_at_time_col not in df_in.columns:
+        from Fuel import add_fuel_at_time_column
+
+        df_in = add_fuel_at_time_column(df_in)
+
+    # ensure P1,P2,P3 exist
+    if "P1" not in df_in.columns:
+        df_in = add_P1_column(df_in)
+    if "P2" not in df_in.columns:
+        df_in = add_P2_column(df_in)
+    if "P3" not in df_in.columns:
+        df_in = add_P3_column(df_in)
+
+    alt = pd.to_numeric(df_in.get(alt_col), errors="coerce")
+    fuel_at_time = pd.to_numeric(df_in.get(fuel_at_time_col), errors="coerce").fillna(0).astype(float)
+
+    mask_cross = alt >= 10000.0
+    if not mask_cross.any():
+        raise ValueError("No row with altitude >= 10000 found; cannot optimize mt0")
+
+    pos0 = int(np.where(mask_cross.values)[0][0])
+    n = len(df_in)
+
+    # helpers to build mt from mt0
+    def build_mt_from_mt0(mt0: float) -> np.ndarray:
+        mt_arr = np.full(n, np.nan, dtype=float)
+        mt_arr[pos0] = float(mt0)
+        # backwards
+        for i in range(pos0 - 1, -1, -1):
+            mt_arr[i] = mt_arr[i + 1] + float(fuel_at_time.iloc[i + 1])
+        # forwards
+        for i in range(pos0 + 1, n):
+            mt_arr[i] = mt_arr[i - 1] - float(fuel_at_time.iloc[i])
+        return mt_arr
+
+    # objective: compute Sumsq scalar for given mt0
+    p1 = pd.to_numeric(df_in.get("P1"), errors="coerce").astype(float)
+    p2 = pd.to_numeric(df_in.get("P2"), errors="coerce").astype(float)
+    p3 = pd.to_numeric(df_in.get("P3"), errors="coerce").astype(float)
+    phases = df_in.get(phase_col)
+
+    def objective(mt0: float) -> float:
+        mt_arr = build_mt_from_mt0(mt0)
+        # compute f2 per row
+        f2_arr = (p1.values * (mt_arr ** 2)) + (p2.values * mt_arr) + p3.values
+        # mask by altitude and phase
+        phase_mask = (phases == phase_val) if phases is not None else pd.Series([False] * n, index=df_in.index)
+        sel_mask = (alt >= alt_min) & (alt <= alt_max) & phase_mask
+        selected = f2_arr[sel_mask.values]
+        # drop NaNs
+        selected = selected[~np.isnan(selected)]
+        if selected.size == 0:
+            return float("inf")
+        return float(np.sum(selected ** 2))
+
+    # bounds for mt0: heuristic based on P1/P3 magnitudes, fallback to a large default
+    p1_arr = pd.to_numeric(df_in.get("P1"), errors="coerce").astype(float).values
+    p3_arr = pd.to_numeric(df_in.get("P3"), errors="coerce").astype(float).values
+    # estimate scale: sqrt(|P3| / min_positive_P1)
+    try:
+        pos_p1 = p1_arr[p1_arr > 0]
+        max_abs_p3 = np.nanmax(np.abs(p3_arr)) if p3_arr.size > 0 else 0.0
+        if pos_p1.size > 0 and max_abs_p3 > 0:
+            est = float(np.sqrt(max_abs_p3 / float(np.min(pos_p1))))
+            bound = max(1e5, est * 4.0)
+        else:
+            total_fuel = float(np.abs(fuel_at_time).sum())
+            bound = max(1e5, total_fuel * 100.0)
+    except Exception:
+        bound = 1e6
+
+    lo, hi = -bound, bound
+
+    # try scipy first if requested
+    mt0_opt = None
+    obj_opt = None
+    if use_scipy:
+        try:
+            from scipy.optimize import minimize_scalar
+
+            res = minimize_scalar(objective, bounds=(lo, hi), method="bounded", options={"xatol": 1e-6})
+            if res.success:
+                mt0_opt = float(res.x)
+                obj_opt = float(res.fun)
+        except Exception:
+            mt0_opt = None
+
+    # fallback grid + refinement if scipy missing or failed
+    if mt0_opt is None:
+        # coarse grid
+        best_x = None
+        best_y = float("inf")
+        for x in np.linspace(lo, hi, 401):
+            y = objective(float(x))
+            if y < best_y:
+                best_y = y
+                best_x = float(x)
+        # refine around best_x
+        span = (hi - lo) / 20.0
+        for _ in range(4):
+            lo_r = best_x - span
+            hi_r = best_x + span
+            xs = np.linspace(lo_r, hi_r, 401)
+            for x in xs:
+                y = objective(float(x))
+                if y < best_y:
+                    best_y = y
+                    best_x = float(x)
+            span /= 10.0
+
+        mt0_opt = best_x
+        obj_opt = best_y
+
+    # build final df_out with optimized mt, f2, Sumsq
+    mt_final = build_mt_from_mt0(mt0_opt)
+    df_out = df_in.copy()
+    df_out["mt"] = pd.Series(mt_final, index=df_out.index)
+    df_out["f2"] = (pd.to_numeric(df_out.get("P1"), errors="coerce") * (df_out["mt"] ** 2)) + (
+        pd.to_numeric(df_out.get("P2"), errors="coerce") * df_out["mt"]
+    ) + pd.to_numeric(df_out.get("P3"), errors="coerce")
+    df_out["f2"] = df_out["f2"].replace([np.inf, -np.inf], pd.NA)
+    df_out["Sumsq"] = compute_sumsq_series(
+        df_out, f2_col=f2_col, alt_col=alt_col, alt_min=alt_min, alt_max=alt_max, phase_col=phase_col, phase_val=phase_val
+    )
+
+    result = {"mt0": mt0_opt, "objective": obj_opt, "pos0": pos0}
+    return df_out, result
 
 
 
