@@ -31,6 +31,7 @@ from flight_phase import detect_flight_phase
 import variable_mass
 import thrust as thrust_mod
 import Fuel as fuel_mod
+import Mass as mass_mod
 
 
 def _process_file(input_path: str, output_path: str, compute_tas: bool = False, aircraft_type: Optional[str] = None) -> None:
@@ -146,6 +147,45 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = False, 
 
         print("Warning: fuel computation failed:")
         traceback.print_exc()
+
+    # 6. Compute mass-related columns from Mass.py (P1,P2,P3,mt,f2,Sumsq)
+    try:
+        df = mass_mod.add_P1_column(df)
+        df = mass_mod.add_P2_column(df)
+        df = mass_mod.add_P3_column(df)
+        df = mass_mod.add_mt_column(df)
+        df = mass_mod.add_f2_column(df)
+        df = mass_mod.add_sumsq_column(df)
+
+        print("Computed mass-related columns: P1, P2, P3, mt, f2, Sumsq")
+        mass_cols = ["P1", "P2", "P3", "mt", "f2", "Sumsq"]
+        present = [c for c in mass_cols if c in df.columns]
+        if present:
+            counts = {c: int(df[c].notna().sum()) for c in present}
+            print("Mass diagnostics - non-null counts:", counts)
+            try:
+                print(df[present].head(5).to_string(index=False))
+            except Exception:
+                pass
+    except Exception as e:
+        import traceback
+
+        print("Warning: mass computation failed:")
+        traceback.print_exc()
+
+    # 6.5 Optional: optimize mt0 to minimize Sumsq (uses Mass.optimize_mt0)
+    try:
+        try:
+            df_opt, res = mass_mod.optimize_mt0(df)
+            print("optimize_mt0 result:", res)
+            # use optimized dataframe for final output
+            df = df_opt
+            print("Applied optimized mt/f2/Sumsq to DataFrame")
+        except Exception as e:
+            print(f"optimize_mt0 skipped/failed: {e}")
+    except Exception:
+        # keep original df on any unexpected error
+        pass
 
     # 6. Save
     # Ensure `aircraft_type` column exists in the output (may be provided interactively)
