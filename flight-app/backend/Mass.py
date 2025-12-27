@@ -211,5 +211,63 @@ def add_f2_column(
     return df_out
 
 
+def compute_sumsq_series(
+    df: pd.DataFrame,
+    f2_col: str = "f2",
+    alt_col: str = "altitude",
+    alt_min: float = 10000.0,
+    alt_max: float = 20000.0,
+) -> pd.Series:
+    """Compute Series `Sumsq` = sum(f2^2) for rows where alt in [alt_min, alt_max].
+
+    The returned Series is aligned with `df` and filled with the scalar sumsq
+    value for every row. If there are no valid f2 values in the altitude range
+    the series contains `pd.NA`.
+    """
+    try:
+        # ensure f2 exists (add if missing)
+        if f2_col not in df.columns:
+            df = add_f2_column(df)
+
+        alt = pd.to_numeric(df.get(alt_col), errors="coerce")
+        f2 = pd.to_numeric(df.get(f2_col), errors="coerce")
+
+        mask = (alt >= alt_min) & (alt <= alt_max)
+        selected = f2[mask].dropna().astype(float)
+
+        if len(selected) == 0:
+            return pd.Series([pd.NA] * len(df), index=df.index, name="Sumsq")
+
+        sumsq_val = (selected ** 2).sum()
+        return pd.Series([sumsq_val] * len(df), index=df.index, name="Sumsq")
+    except Exception:
+        return pd.Series([pd.NA] * len(df), index=df.index, name="Sumsq")
+
+
+def add_sumsq_column(
+    df: pd.DataFrame,
+    f2_col: str = "f2",
+    alt_col: str = "altitude",
+    alt_min: float = 10000.0,
+    alt_max: float = 20000.0,
+) -> pd.DataFrame:
+    """Return DataFrame copy with `Sumsq` column added.
+
+    If `f2` is missing it will be computed first.
+    """
+    df_out = df.copy()
+    try:
+        if f2_col not in df_out.columns:
+            df_out = add_f2_column(df_out)
+
+        df_out["Sumsq"] = compute_sumsq_series(
+            df_out, f2_col=f2_col, alt_col=alt_col, alt_min=alt_min, alt_max=alt_max
+        )
+    except Exception:
+        df_out["Sumsq"] = pd.NA
+
+    return df_out
+
+
 
 
