@@ -33,7 +33,6 @@ def add_P1_column(df: pd.DataFrame) -> pd.DataFrame:
 
     return df_out
 
-
 def add_P2_column(df: pd.DataFrame) -> pd.DataFrame:
     """Return a copy of `df` with a new `P2` column computed.
 
@@ -57,5 +56,33 @@ def add_P2_column(df: pd.DataFrame) -> pd.DataFrame:
         df_out["P2"] = pd.NA
 
     return df_out
+
+def add_P3_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy of `df` with a new `P3` column computed.
+
+    Formula:
+    P3 = CD0 * 0.5 * Density * (TAS_m/s)^2 * S_m^2 - Thrust_N * 0.76
+
+    The function is defensive: it converts inputs to numeric where possible
+    and replaces infinities with NA.
+    """
+    df_out = df.copy()
+    try:
+        cd0 = pd.to_numeric(df_out.get("CD0"), errors="coerce")
+        density = pd.to_numeric(df_out.get("Density"), errors="coerce")
+        tas = pd.to_numeric(df_out.get("TAS_m/s"), errors="coerce")
+        S = pd.to_numeric(df_out.get("S_m^2"), errors="coerce")
+        thrust = pd.to_numeric(df_out.get("Thrust_N"), errors="coerce")
+
+        aero_term = 0.5 * density * (tas ** 2) * S
+
+        df_out["P3"] = (cd0 * aero_term) - (thrust * 0.76)
+        df_out["P3"] = df_out["P3"].replace([np.inf, -np.inf], pd.NA)
+    except Exception:
+        df_out["P3"] = pd.NA
+
+    return df_out
+
+
 
 
