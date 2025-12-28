@@ -25,6 +25,7 @@ import glob
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
 
 from multi_tas import compute_tas_for_dataframe
 from flight_phase import detect_flight_phase
@@ -210,6 +211,19 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = False, 
             print(f"Warning: add_D failed: {e}")
 
         try:
+            # If ROCD not present, attempt to compute from altitude and delta time
+            if "ROCD_m/s" not in df.columns:
+                if "altitude" in df.columns and "delta_t (s)" in df.columns:
+                    # ROCD_m/s = delta altitude (m) / delta_t (s)
+                    # altitude may be in meters already; diff gives meters if so
+                    dt = df["delta_t (s)"].astype(float).replace({0: np.nan})
+                    # compute altitude diff; if altitude is in feet convert elsewhere — assume meters here
+                    rocd_ms = df["altitude"].astype(float).diff().fillna(0) / dt.fillna(method="ffill").fillna(1)
+                    df["ROCD_m/s"] = rocd_ms.fillna(0)
+                    print("Computed ROCD_m/s from altitude and delta_t (s)")
+                else:
+                    print("ROCD_m/s column missing and altitude/delta_t not available; skipping ROCD_m/s computation")
+
             df = add_Thrust_N_TE(df)
             print("Added column: Thrust_N_TE")
         except Exception as e:
