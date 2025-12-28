@@ -187,6 +187,37 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = False, 
         # keep original df on any unexpected error
         pass
 
+    # 6.x Compute Total_Energy columns if available (CL, CD, D, Thrust_N_TE)
+    try:
+        from Total_Energy import add_CL, add_CD, add_D, add_Thrust_N_TE
+
+        try:
+            df = add_CL(df)
+            print("Added column: CL")
+        except Exception as e:
+            print(f"Warning: add_CL failed: {e}")
+
+        try:
+            df = add_CD(df)
+            print("Added column: CD")
+        except Exception as e:
+            print(f"Warning: add_CD failed: {e}")
+
+        try:
+            df = add_D(df)
+            print("Added column: D")
+        except Exception as e:
+            print(f"Warning: add_D failed: {e}")
+
+        try:
+            df = add_Thrust_N_TE(df)
+            print("Added column: Thrust_N_TE")
+        except Exception as e:
+            print(f"Warning: add_Thrust_N_TE failed: {e}")
+
+    except Exception:
+        print("Warning: Total_Energy module not found; skipping TE columns")
+
     # 6. Save
     # Ensure `aircraft_type` column exists in the output (may be provided interactively)
     if "aircraft_type" not in df.columns:
