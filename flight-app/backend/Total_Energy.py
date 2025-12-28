@@ -6,7 +6,7 @@ Formulas used:
     CL = (2 * mt_first * 9.80665) / (Density * (TAS_m/s)**2 * (S_m^2))
     CD = CD0 + CD0,deltaLDG + CD2 * (CL)**2
     D  = (CD * Density * (TAS_m/s)**2 * (S_m^2)) / 2
-    Thrust_N_TE = (((mt * 9.80665 * ROCD) + (mt * TAS_m/s * a_m/s^2)) / (TAS_m/s)) + D
+    Thrust_N_TE = (((mt * 9.80665 * ROCD_m/s) + (mt * TAS_m/s * a_m/s^2)) / (TAS_m/s)) + D
 
 Assumes the DataFrame has columns named `mt`, `Density`, `TAS_m/s`, `S_m^2`,
 `CD0`, `CD0,deltaLDG`, and `CD2` by default. You can pass alternative column
@@ -44,7 +44,7 @@ def add_CL(
         raise ValueError(f"could not read first value of '{mt_col}': {exc}") from exc
 
     denom = df[density_col].astype(float) * (df[tas_col].astype(float) ** 2) * (
-        df[s_col].astype(float) ** 2
+        df[s_col].astype(float)
     )
 
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -118,7 +118,7 @@ def add_D(
 def add_Thrust_N_TE(
     df: pd.DataFrame,
     mt_col: str = "mt",
-    rocd_col: str = "ROCD",
+    rocd_col: str = "ROCD_m/s",
     tas_col: str = "TAS_m/s",
     a_col: str = "a_m/s^2",
     d_col: str = "D",
@@ -129,7 +129,7 @@ def add_Thrust_N_TE(
 
     Thrust_N_TE = (((mt * 9.80665 * ROCD) + (mt * TAS * a)) / TAS) + D
 
-    Requires columns: `mt`, `ROCD`, `TAS_m/s`, `a_m/s^2`, and `D` (or custom names).
+    Requires columns: `mt`, `ROCD_m/s`, `TAS_m/s`, `a_m/s^2`, and `D` (or custom names).
     """
     if not inplace:
         df = df.copy()
