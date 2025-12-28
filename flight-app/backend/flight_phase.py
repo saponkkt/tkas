@@ -86,24 +86,34 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
     cruise_start_idx = None
     cruise_end_idx = None
     if cruise_altitude is not None:
-        # หาช่วงที่ altitude ใกล้เคียงกับ cruise_altitude
+        # หาช่วงที่ altitude ใกล้เคียงกับ cruise_altitude (เลือก contiguous window ที่ยาวที่สุด)
         # ใช้ค่า smoothed เพื่อลดผลกระทบจาก spikes สั้นๆ
-        # ใช้การปัดลง (floor) แทนการปัดปกติ เพื่อหลีกเลี่ยงการปัดค่าที่ขึ้นมาเป็นค่า cruise
         altitude_rounded = np.floor(altitude_smoothed / 100) * 100
         cruise_rounded = round(cruise_altitude / 100) * 100
-        
-        in_cruise = False
-        for i in range(len(altitude_rounded)):
-            if pd.isna(altitude_rounded.iloc[i]):
+
+        # หา contiguous segments ที่อยู่ใน band (±50 ft) และเลือก segment ที่ยาวที่สุด
+        best_start = None
+        best_end = None
+        best_len = 0
+        i = 0
+        n = len(altitude_rounded)
+        while i < n:
+            if pd.isna(altitude_rounded.iloc[i]) or abs(altitude_rounded.iloc[i] - cruise_rounded) > 50:
+                i += 1
                 continue
-            if abs(altitude_rounded.iloc[i] - cruise_rounded) <= 50:
-                if not in_cruise:
-                    cruise_start_idx = i
-                    in_cruise = True
-                cruise_end_idx = i
-            else:
-                if in_cruise:
-                    break
+            start = i
+            while i < n and not pd.isna(altitude_rounded.iloc[i]) and abs(altitude_rounded.iloc[i] - cruise_rounded) <= 50:
+                i += 1
+            end = i - 1
+            seg_len = end - start + 1
+            if seg_len > best_len:
+                best_len = seg_len
+                best_start = start
+                best_end = end
+
+        if best_len > 0:
+            cruise_start_idx = best_start
+            cruise_end_idx = best_end
     
     # 5. จำแนก phases
     for i in range(len(df_out)):
