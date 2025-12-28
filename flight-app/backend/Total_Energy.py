@@ -5,6 +5,8 @@ Provides utilities to compute and add `CL` and `CD` columns to a pandas DataFram
 Formulas used:
     CL = (2 * mt_first * 9.80665) / (Density * (TAS_m/s)**2 * (S_m^2))
     CD = CD0 + CD0,deltaLDG + CD2 * (CL)**2
+    D  = (CD * Density * (TAS_m/s)**2 * (S_m^2)) / 2
+    Thrust_N_TE = (((mt * 9.80665 * ROCD) + (mt * TAS_m/s * a_m/s^2)) / (TAS_m/s)) + D
 
 Assumes the DataFrame has columns named `mt`, `Density`, `TAS_m/s`, `S_m^2`,
 `CD0`, `CD0,deltaLDG`, and `CD2` by default. You can pass alternative column
@@ -79,6 +81,71 @@ def add_CD(
         + df[cd0_delta_col].astype(float)
         + df[cd2_col].astype(float) * (df[cl_col].astype(float) ** 2)
     )
+
+    return df
+
+
+def add_D(
+    df: pd.DataFrame,
+    cd_col: str = "CD",
+    density_col: str = "Density",
+    tas_col: str = "TAS_m/s",
+    s_col: str = "S_m^2",
+    out_col: str = "D",
+    inplace: bool = False,
+) -> pd.DataFrame:
+    """Add a `D` (drag) column to `df` using the provided formula.
+
+    D = (CD * Density * (TAS_m/s)**2 * (S_m^2)) / 2
+    """
+    if not inplace:
+        df = df.copy()
+
+    for col in (cd_col, density_col, tas_col, s_col):
+        if col not in df.columns:
+            raise KeyError(f"required column '{col}' not found in DataFrame")
+
+    df[out_col] = (
+        df[cd_col].astype(float)
+        * df[density_col].astype(float)
+        * (df[tas_col].astype(float) ** 2)
+        * df[s_col].astype(float)
+    ) / 2.0
+
+    return df
+
+
+def add_Thrust_N_TE(
+    df: pd.DataFrame,
+    mt_col: str = "mt",
+    rocd_col: str = "ROCD",
+    tas_col: str = "TAS_m/s",
+    a_col: str = "a_m/s^2",
+    d_col: str = "D",
+    out_col: str = "Thrust_N_TE",
+    inplace: bool = False,
+) -> pd.DataFrame:
+    """Add `Thrust_N_TE` column using formula:
+
+    Thrust_N_TE = (((mt * 9.80665 * ROCD) + (mt * TAS * a)) / TAS) + D
+
+    Requires columns: `mt`, `ROCD`, `TAS_m/s`, `a_m/s^2`, and `D` (or custom names).
+    """
+    if not inplace:
+        df = df.copy()
+
+    for col in (mt_col, rocd_col, tas_col, a_col, d_col):
+        if col not in df.columns:
+            raise KeyError(f"required column '{col}' not found in DataFrame")
+
+    mt = df[mt_col].astype(float)
+    rocd = df[rocd_col].astype(float)
+    tas = df[tas_col].astype(float)
+    a = df[a_col].astype(float)
+    d = df[d_col].astype(float)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        df[out_col] = ((mt * 9.80665 * rocd + mt * tas * a) / tas) + d
 
     return df
 
