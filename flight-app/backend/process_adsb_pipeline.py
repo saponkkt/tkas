@@ -33,6 +33,7 @@ import variable_mass
 import thrust as thrust_mod
 import Fuel as fuel_mod
 import Mass as mass_mod
+import importlib.util
 
 
 def _process_file(input_path: str, output_path: str, compute_tas: bool = False, aircraft_type: Optional[str] = None) -> None:
@@ -148,7 +149,26 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = False, 
 
         print("Warning: fuel computation failed:")
         traceback.print_exc()
+    
+    
 
+    # Create alias column names expected elsewhere (add _TE suffixes and safe names)
+    try:
+        # map existing names to expected names
+        alias_map = {
+            "fnom": "fnom_TE",
+            "fmin": "fmin_TE",
+            "fap/ld": "fap_ld",
+            "fcr": "fcr_TE",
+            "CO2_at_time": "CO2_at_time_TE",
+            "CO2_sum_with_time": "CO2_sum_with_time_TE",
+        }
+        for src, dst in alias_map.items():
+            if src in df.columns and dst not in df.columns:
+                df[dst] = df[src]
+                print(f"Aliased column: {src} -> {dst}")
+    except Exception as e:
+        print(f"Warning: aliasing Fuel&CO2_TE columns failed: {e}")
     # 6. Compute mass-related columns from Mass.py (P1,P2,P3,mt,f2,Sumsq)
     try:
         df = mass_mod.add_P1_column(df)
@@ -228,6 +248,79 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = False, 
             print("Added column: Thrust_N_TE")
         except Exception as e:
             print(f"Warning: add_Thrust_N_TE failed: {e}")
+
+        # Now run Fuel&CO2_TE helpers (requires Thrust_N_TE present)
+        try:
+            fuel_co2_te = None
+            try:
+                module_path = Path(__file__).parent / "Fuel&CO2_TE.py"
+                spec = importlib.util.spec_from_file_location("fuel_co2_te", str(module_path))
+                if spec and spec.loader:
+                    fuel_co2_te = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(fuel_co2_te)
+            except Exception as e:
+                fuel_co2_te = None
+                print(f"Warning: could not load Fuel&CO2_TE module: {e}")
+
+            if fuel_co2_te is not None:
+                try:
+                    df = fuel_co2_te.add_fnom_TE(df)
+                    print("Added column: fnom")
+                except Exception as e:
+                    print(f"Warning: add_fnom_TE failed: {e}")
+
+                try:
+                    df = fuel_co2_te.add_fmin_TE(df)
+                    print("Added column: fmin")
+                except Exception as e:
+                    print(f"Warning: add_fmin_TE failed: {e}")
+
+                try:
+                    df = fuel_co2_te.add_fap_ld(df)
+                    print("Added column: fap/ld")
+                except Exception as e:
+                    print(f"Warning: add_fap_ld failed: {e}")
+
+                try:
+                    df = fuel_co2_te.add_fcr_TE(df)
+                    print("Added column: fcr")
+                except Exception as e:
+                    print(f"Warning: add_fcr_TE failed: {e}")
+
+                try:
+                    df = fuel_co2_te.add_Fuel_TE(df)
+                    print("Added column: Fuel_TE")
+                except Exception as e:
+                    print(f"Warning: add_Fuel_TE failed: {e}")
+
+                try:
+                    df = fuel_co2_te.add_Fuel_at_time_TE(df)
+                    print("Added column: Fuel_at_time_TE")
+                except Exception as e:
+                    print(f"Warning: add_Fuel_at_time_TE failed: {e}")
+
+                try:
+                    df = fuel_co2_te.add_Fuel_sum_with_time_TE(df)
+                    print("Added column: Fuel_sum_with_time_TE")
+                except Exception as e:
+                    print(f"Warning: add_Fuel_sum_with_time_TE failed: {e}")
+
+                try:
+                    df = fuel_co2_te.add_CO2_at_time_TE(df)
+                    print("Added column: CO2_at_time")
+                except Exception as e:
+                    print(f"Warning: add_CO2_at_time_TE failed: {e}")
+
+                try:
+                    df = fuel_co2_te.add_CO2_sum_with_time_TE(df)
+                    print("Added column: CO2_sum_with_time")
+                except Exception as e:
+                    print(f"Warning: add_CO2_sum_with_time_TE failed: {e}")
+                # (aliasing removed) do not create TE-suffixed alias columns here
+            else:
+                print("Fuel&CO2_TE module not available; skipping Fuel/CO2 TE columns")
+        except Exception as e:
+            print(f"Warning: Fuel&CO2_TE integration failed: {e}")
 
     except Exception:
         print("Warning: Total_Energy module not found; skipping TE columns")
