@@ -310,10 +310,10 @@ def add_Fuel_sum_with_time_TE(
             raise KeyError(f"required column '{fuel_at_time_col}' not found and add_Fuel_at_time_TE failed to compute it")
 
     fat = pd.to_numeric(df[fuel_at_time_col], errors="coerce").fillna(0)
-    # cumulative sum of previous rows: shift cumsum so first row is 0
-    csum_prev = fat.cumsum().shift(1, fill_value=0)
+    # cumulative sum including current row so row n = sum(fuel_at_time[:n+1])
+    csum_inclusive = fat.cumsum()
 
-    df[out_col] = csum_prev
+    df[out_col] = csum_inclusive
     return df
 
 
@@ -373,9 +373,10 @@ def add_CO2_sum_with_time_TE(
             raise KeyError(f"required column '{co2_at_time_col}' not found and add_CO2_at_time_TE failed to compute it")
 
     cat = pd.to_numeric(df[co2_at_time_col], errors="coerce").fillna(0)
-    csum_prev = cat.cumsum().shift(1, fill_value=0)
+    # inclusive cumulative sum: row n = sum(co2_at_time[:n+1])
+    csum_inclusive = cat.cumsum()
 
-    df[out_col] = csum_prev
+    df[out_col] = csum_inclusive
     return df
 
 
