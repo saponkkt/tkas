@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import pandas as pd
 from thrust import get_config_param_series
+import numpy as np
 
 
 def add_fnom_TE(
@@ -207,8 +208,8 @@ def add_Fuel_TE(
     fapld = pd.to_numeric(df.get(fapld_col), errors="coerce")
     thrust = pd.to_numeric(df.get(thrust_col), errors="coerce")
 
-    # prepare output series
-    fuel = pd.Series([pd.NA] * len(df), index=df.index, dtype=float)
+    # prepare output series (use numeric NaN to avoid pd.NA -> float() issues)
+    fuel = pd.Series(np.nan, index=df.index, dtype=float)
 
     # Masks
     mask_taxi_out = phases == "Taxi_out"
@@ -350,7 +351,6 @@ def add_CO2_at_time_TE(
 
 
 __all__.append("add_CO2_at_time_TE")
-
 
 def add_CO2_sum_with_time_TE(
     df: pd.DataFrame,
