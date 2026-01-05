@@ -682,37 +682,6 @@ def compute_tas_for_dataframe(df: pd.DataFrame, prefer_gfs: bool = True, input_c
             except Exception:
                 temp0 = None
 
-            # If we couldn't sample from ERA5/GFS, try Meteostat (station observations)
-            if temp0 is None:
-                try:
-                    try:
-                        from meteostat import Stations, Hourly
-                    except Exception as _e:
-                        # meteostat not installed or import failure
-                        raise
-
-                    # round to nearest hour for station hourly data
-                    t0 = pd.to_datetime(time0, unit='s', utc=True)
-                    tstart = t0.floor('H')
-                    tend = tstart
-
-                    stations = Stations().nearby(lat0, lon0).fetch(1)
-                    if not stations.empty:
-                        st_id = stations.index[0]
-                        hr = Hourly(st_id, tstart, tend)
-                        df_hr = hr.fetch()
-                        if not df_hr.empty and 'temp' in df_hr.columns:
-                            temp_c = df_hr['temp'].iloc[0]
-                            if pd.notna(temp_c):
-                                temp0 = float(temp_c) + 273.15
-                                print(f"multi_tas: sampled temp0={temp0} K from Meteostat station {st_id}")
-                except ImportError:
-                    # meteostat not available in environment; skip
-                    pass
-                except Exception:
-                    # non-fatal: leave temp0 as None
-                    pass
-
             # Debug / diagnostic logging about temperature sampling
             try:
                 if temp0 is not None:
