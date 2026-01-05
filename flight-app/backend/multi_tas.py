@@ -250,6 +250,46 @@ def compute_tas_for_dataframe(df: pd.DataFrame, prefer_gfs: bool = True, input_c
                 if "time" in ds.coords and not hasattr(ds.time.dtype, "tz"):
                     ds["time"] = pd.to_datetime(ds["time"].values).tz_localize("UTC")
                 source = "era5"
+                # Also ensure single-level ERA5 file is available for temperature sampling.
+                ds_single = None
+                single_nc = f"era5_single_level_{flight_time.strftime('%Y%m%d')}.nc"
+                try:
+                    if not os.path.exists(single_nc):
+                        try:
+                            c2 = cdsapi.Client()
+                        except Exception:
+                            c2 = None
+                        if c2 is not None:
+                            try:
+                                c2.retrieve(
+                                    'reanalysis-era5-single-levels',
+                                    {
+                                        'product_type': 'reanalysis',
+                                        'variable': ['2m_temperature', 'sea_surface_temperature'],
+                                        'year': str(flight_time.year),
+                                        'month': f"{flight_time.month:02d}",
+                                        'day': f"{flight_time.day:02d}",
+                                        'time': [f"{h:02d}:00" for h in range(24)],
+                                        'format': 'netcdf',
+                                    },
+                                    single_nc,
+                                )
+                            except Exception:
+                                pass
+                    if os.path.exists(single_nc):
+                        try:
+                            ds_single = xr.open_dataset(single_nc)
+                            if 'valid_time' in ds_single.dims and 'time' not in ds_single.dims:
+                                try:
+                                    ds_single = ds_single.rename({'valid_time': 'time'})
+                                except Exception:
+                                    pass
+                            if 'time' in ds_single.coords and not hasattr(ds_single.time.dtype, 'tz'):
+                                ds_single['time'] = pd.to_datetime(ds_single['time'].values).tz_localize('UTC')
+                        except Exception:
+                            ds_single = None
+                except Exception:
+                    ds_single = None
             except Exception as e:
                 print(f"Failed to open ERA5 pressure-level file {out_nc}: {e}")
                 try:
@@ -633,6 +673,30 @@ def compute_tas_for_dataframe(df: pd.DataFrame, prefer_gfs: bool = True, input_c
                                             return float(point.values)
                                         except Exception:
                                             continue
+                        # Before using pressure-level results, prefer single-level file values when available
+                        try:
+                            if 'ds_single' in locals() and ds_single is not None:
+                                try:
+                                    tsel = ds_single.sel(time=t_dt, method='nearest')
+                                    lon_name = 'longitude' if 'longitude' in ds_single.coords else ('lon' if 'lon' in ds_single.coords else 'longitude')
+                                    lat_name = 'latitude' if 'latitude' in ds_single.coords else ('lat' if 'lat' in ds_single.coords else 'latitude')
+                                    lon__ = ((lon + 180) % 360) - 180
+                                    for cand in ('sea_surface_temperature', 'sea_surface_temp', 'sst', 't2m', '2m_temperature'):
+                                        if cand in ds_single.variables:
+                                            try:
+                                                pval = tsel[cand].sel({lat_name: lat, lon_name: lon__}, method='nearest')
+                                            except Exception:
+                                                pval = tsel[cand].sel({lat_name: lat, lon_name: lon}, method='nearest')
+                                            try:
+                                                v = float(pval.values)
+                                            except Exception:
+                                                v = None
+                                            if v is not None and np.isfinite(v):
+                                                return v
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
 
                         # Finally, if we still have a variable name from candidates try it at nearest lat/lon with small offsets
                         if var_name is not None and var_name in ds.variables:
