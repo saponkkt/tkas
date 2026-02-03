@@ -276,7 +276,7 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
 
     df_out["CD2"] = df_out.apply(_select_cd2, axis=1)
     
-    # เพิ่มคอลัมน์ CD0,deltaLDG: เลือกค่า CD0,deltaLDG จาก section ที่เหมาะสมใน config.json ตาม flight_phase
+    # เพิ่มคอลัมน์ cd0_delta: เลือกค่า cd0_delta จาก section ที่เหมาะสมใน config.json ตาม flight_phase
     # Compute integer positions for robust range checks (0..N-1)
     df_out["_pos"]= np.arange(len(df_out))
     alt_numeric = pd.to_numeric(df_out.get("altitude"), errors="coerce").fillna(-9999)
@@ -290,13 +290,13 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
     landing_pos = np.where(phases_arr == "Landing")[0]
     last_landing_pos = int(landing_pos.max()) if landing_pos.size > 0 else None
 
-    # first position where altitude <= 1500 ft AND phase == 'Landing' (if any)
+    # first position where altitude <= 2000 ft AND phase == 'Landing' (if any)
     landing_positions = np.where(phases_arr == "Landing")[0]
     first_alt_le1500_pos = None
     if landing_positions.size > 0:
-        # consider only landing positions when searching for the 1500-ft threshold
+        # consider only landing positions when searching for the 2000-ft threshold
         landing_alts = alt_numeric[landing_positions]
-        idxs = np.where(landing_alts <= 1500)[0]
+        idxs = np.where(landing_alts <= 2000)[0]
         if idxs.size > 0:
             # map back to global positions
             first_alt_le1500_pos = int(landing_positions[idxs.min()])
@@ -308,13 +308,13 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
     def _select_cd0_deltaLDG(row: pd.Series) -> object:
         # Only assign CD0,deltaLDG for two ranges:
         # 1) from the first row up to last Takeoff row (inclusive)
-        # 2) from the first row with altitude >=1500 ft up to last Landing row (inclusive)
+        # 2) from the first row with altitude >=2000 ft up to last Landing row (inclusive)
         pos = int(row.get("_pos", -1))
 
         in_range = False
         if last_takeoff_pos is not None and pos <= last_takeoff_pos:
             in_range = True
-        # second range: from first row in Landing where altitude <=1500 ft
+        # second range: from first row in Landing where altitude <=2000 ft
         # up to the last Taxi_in row (if present). If Taxi_in not present,
         # fall back to last Landing position.
         second_range_end = last_taxi_in_pos if last_taxi_in_pos is not None else last_landing_pos
@@ -343,10 +343,10 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
         section = phase_to_section_lower.get(normalized, "CR")
         try:
             sec_obj = config[type_key].get(section, {})
-            val = sec_obj.get("CD0,deltaLDG") if isinstance(sec_obj, dict) else None
+            val = sec_obj.get("cd0_delta") if isinstance(sec_obj, dict) else None
             if val is None:
-                # fallback: some configs might have CD0,deltaLDG at top level
-                val = config[type_key].get("CD0,deltaLDG")
+                # fallback: some configs might have cd0_delta at top level
+                val = config[type_key].get("cd0_delta")
             if val is None:
                 # missing config value -> use 0.0 per request
                 return 0.0
@@ -357,7 +357,7 @@ def add_utc_split_columns(df: pd.DataFrame, utc_col: str = "UTC") -> pd.DataFram
         except Exception:
             return pd.NA
 
-    df_out["CD0,deltaLDG"] = df_out.apply(_select_cd0_deltaLDG, axis=1)
+    df_out["cd0_delta"] = [_select_cd0_deltaLDG(row) for _, row in df_out.iterrows()]
     # cleanup helper column
     try:
         df_out.drop(columns=["_pos"], inplace=True)
