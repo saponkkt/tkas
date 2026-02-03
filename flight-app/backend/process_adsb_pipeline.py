@@ -36,12 +36,33 @@ import Mass as mass_mod
 import importlib.util
 
 
-def _process_file(input_path: str, output_path: str, compute_tas: bool = False, aircraft_type: Optional[str] = None) -> None:
+print("Script loaded")
+
+def _process_file(input_path: str, output_path: str, compute_tas: bool = True, aircraft_type: Optional[str] = None) -> None:
     """Process a single CSV file and write output CSV."""
     df = pd.read_csv(input_path)
 
+    # Parse Position into latitude and longitude if present
+    if 'Position' in df.columns:
+        try:
+            df[['latitude', 'longitude']] = df['Position'].str.split(',', expand=True).astype(float)
+            print("Parsed Position into latitude and longitude")
+        except Exception as e:
+            print(f"Warning: could not parse Position: {e}")
+
+    # Normalize column names
+    rename_dict = {}
+    if 'Altitude' in df.columns and 'altitude' not in df.columns:
+        rename_dict['Altitude'] = 'altitude'
+    if 'Speed' in df.columns and 'TAS_kt' not in df.columns:
+        rename_dict['Speed'] = 'TAS_kt'
+    if 'Direction' in df.columns and 'track' not in df.columns:
+        rename_dict['Direction'] = 'track'
+    df.rename(columns=rename_dict, inplace=True)
+    if rename_dict:
+        print(f"Renamed columns: {rename_dict}")
+
     # Basic case-insensitive normalization for commonly used column names
-    # without overwriting existing normalized names.
     existing = {c.lower(): c for c in df.columns}
     if "altitude" not in df.columns:
         if "altitude" in existing:
@@ -72,8 +93,13 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = False, 
     # normalization is available to `detect_flight_phase`.
     if compute_tas:
         try:
-            df = compute_tas_for_dataframe(df, input_csv=input_path)
-            print("Computed TAS and wind columns from model data")
+            df_new = compute_tas_for_dataframe(df, input_csv=input_path)
+            if len(df_new) == 0:
+                print("Warning: compute_tas returned empty DataFrame, skipping TAS computation")
+                # continue without TAS
+            else:
+                df = df_new
+                print("Computed TAS and wind columns from model data")
         except Exception as e:
             print(f"Error: compute_tas_for_dataframe failed: {e}")
             print("Skipping this file because TAS/wind data are required for downstream calculations.")
@@ -82,7 +108,23 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = False, 
     # 3. Ensure UTC column exists for downstream modules (variable_mass expects 'UTC')
     if "UTC" not in df.columns:
         if "utc_time" in df.columns:
-            df["UTC"] = df["utc_time"]
+            utc_val = df["utc_time"]
+            # If `utc_time` is a DataFrame (multiple columns), coalesce to a single Series
+            if isinstance(utc_val, pd.DataFrame):
+                try:
+                    # take first non-null value across columns for each row
+                    utc_series = utc_val.apply(lambda row: next((x for x in row if pd.notnull(x)), None), axis=1)
+                except Exception:
+                    # fallback: take the first column
+                    utc_series = utc_val.iloc[:, 0]
+            else:
+                utc_series = utc_val
+
+            # Try to parse to datetime ISO; fallback to string when parsing fails
+            try:
+                df["UTC"] = pd.to_datetime(utc_series, errors="coerce", utc=True).dt.strftime("%Y-%m-%dT%H:%M:%SZ").fillna("")
+            except Exception:
+                df["UTC"] = utc_series.astype(str).fillna("")
         else:
             # if we have epoch seconds in `time`, format to ISO
             try:
@@ -92,8 +134,52 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = False, 
 
     # 3. Detect flight phases
     try:
+        # Ensure ROCD_m/s exists: compute from UTC + altitude when missing
+        try:
+            if "ROCD_m/s" not in df.columns:
+                if "UTC" in df.columns and "altitude" in df.columns:
+                    dt = pd.to_datetime(df["UTC"], errors="coerce")
+                    dt_s = dt.diff().dt.total_seconds().fillna(1.0)
+                    alt = pd.to_numeric(df["altitude"], errors="coerce")
+                    # Heuristic: if alt values are large, assume feet and convert to meters
+                    try:
+                        max_alt = float(alt.max(skipna=True))
+                    except Exception:
+                        max_alt = None
+                    if max_alt is not None and max_alt > 2500:
+                        alt_m = alt * 0.3048
+                    else:
+                        alt_m = alt
+                    rocd_ms = alt_m.diff().fillna(0) / dt_s.replace(0, 1.0)
+                    # Clean floating-point noise: round to 1 decimal place
+                    # This converts values like 3.3e-12 to 0.0
+                    rocd_ms_clean = np.round(rocd_ms.fillna(0), decimals=1)
+                    df["ROCD_m/s"] = rocd_ms_clean
+                    print("Computed ROCD_m/s from UTC and altitude")
+                else:
+                    print("ROCD_m/s missing and UTC/altitude not available; skipping ROCD computation")
+        except Exception as _e:
+            print(f"Warning: could not compute ROCD_m/s: {_e}")
+
         df = detect_flight_phase(df)
         print("Added column: flight_phase")
+        # Post-processing: if ROCD indicates stable (≈0) and altitude is constant
+        # for a small window, promote phase to Cruise to catch immediate plateaus.
+        try:
+            if 'ROCD_m/s' in df.columns and 'altitude' in df.columns:
+                alt = pd.to_numeric(df['altitude'], errors='coerce')
+                alt_sm = alt.rolling(window=3, center=True, min_periods=1).median().bfill().ffill()
+                rocd = pd.to_numeric(df['ROCD_m/s'], errors='coerce').fillna(0)
+                for i in range(len(df)):
+                    if i > 0 and df.loc[i, 'flight_phase'] == 'Climb':
+                        recent_range = min(2, i)
+                        past_altitudes = alt_sm.iloc[i-recent_range+1:i+1]
+                        alt_range = past_altitudes.max() - past_altitudes.min() if len(past_altitudes) >= 2 else 0
+                        if alt_range <= 50 and abs(rocd.iloc[i]) <= 0.1:
+                            df.at[i, 'flight_phase'] = 'Cruise'
+                print('Post-processed flight_phase using ROCD stability (small window)')
+        except Exception as _e:
+            print(f'Warning: post-process ROCD fix failed: {_e}')
     except Exception as e:
         print(f"Warning: detect_flight_phase failed: {e}")
 
@@ -174,11 +260,12 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = False, 
         df = mass_mod.add_P1_column(df)
         df = mass_mod.add_P2_column(df)
         df = mass_mod.add_P3_column(df)
-        df = mass_mod.add_mt_column(df)
+        # First pass: use a baseline mt_offset to initialize
+        df = mass_mod.add_mt_column(df, mt_offset=57796.0)
         df = mass_mod.add_f2_column(df)
         df = mass_mod.add_sumsq_column(df)
 
-        print("Computed mass-related columns: P1, P2, P3, mt, f2, Sumsq")
+        print("Computed mass-related columns: P1, P2, P3, mt, f2, Sumsq (initial)")
         mass_cols = ["P1", "P2", "P3", "mt", "f2", "Sumsq"]
         present = [c for c in mass_cols if c in df.columns]
         if present:
@@ -194,19 +281,32 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = False, 
         print("Warning: mass computation failed:")
         traceback.print_exc()
 
-    # 6.5 Optional: optimize mt0 to minimize Sumsq (uses Mass.optimize_mt0)
+    # 6.5 Optional: optimize mt0 to minimize Sumsq
+    # Try to use optimizer to find mt value that minimizes aerodynamic objective
     try:
-        try:
-            df_opt, res = mass_mod.optimize_mt0(df)
-            print("optimize_mt0 result:", res)
-            # use optimized dataframe for final output
+        print(f"Running optimize_mt0 without target (using only aerodynamic objective)...")
+        target_mt = None
+        weight_aero = 1.0
+        weight_target = 0.0
+        
+        df_opt, result = mass_mod.optimize_mt0(
+            df,
+            target_mt0=target_mt,
+            weight_aero=weight_aero,
+            weight_target=weight_target,
+            excel_nonneg=True
+        )
+        if result.get("mt0") is not None:
+            opt_mt0 = result["mt0"]
+            print(f"Optimized mt0={opt_mt0:.2f}, objective={result.get('objective', 'N/A')}")
+            print(f"Optimized mt[0]={df_opt['mt'].iloc[0]:.2f}")
             df = df_opt
-            print("Applied optimized mt/f2/Sumsq to DataFrame")
-        except Exception as e:
-            print(f"optimize_mt0 skipped/failed: {e}")
-    except Exception:
-        # keep original df on any unexpected error
-        pass
+        else:
+            print(f"Optimization skipped: {result.get('skipped', 'unknown reason')}")
+    except Exception as e:
+        print(f"Warning: optimize_mt0 failed: {e}")
+        import traceback
+        traceback.print_exc()
 
     # 6.x Compute Total_Energy columns if available (CL, CD, D, Thrust_N_TE)
     try:
@@ -332,8 +432,63 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = False, 
         df["aircraft_type"] = aircraft_type if aircraft_type is not None else ""
         print(f"Ensured aircraft_type column in output (set to '{df['aircraft_type'].iloc[0]}' for rows)")
 
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(output_path, index=False)
     print(f"Saved output to: {output_path}")
+    
+    # 7. Add summary rows at the end of CSV
+    # Extract summary values
+    try:
+        etow = None
+        if 'mt' in df.columns and len(df) > 0:
+            if 'flight_phase' in df.columns:
+                takeoff_mask = df['flight_phase'] == 'Takeoff'
+                takeoff_indices = df[takeoff_mask].index.tolist()
+                if takeoff_indices:
+                    etow = df.loc[takeoff_indices[0], 'mt']
+                else:
+                    etow = df['mt'].iloc[0]
+            else:
+                etow = df['mt'].iloc[0]
+        total_fuel = df['Fuel_sum_with_time_TE'].iloc[-1] if 'Fuel_sum_with_time_TE' in df.columns and len(df) > 0 else None
+        total_co2 = df['CO2_sum_with_time'].iloc[-1] if 'CO2_sum_with_time' in df.columns and len(df) > 0 else None
+        
+        # Calculate Trip_fuel from Fuel_at_time_TE between Takeoff and Landing
+        trip_fuel = None
+        if 'flight_phase' in df.columns and 'Fuel_at_time_TE' in df.columns:
+            try:
+                # Find first row with Takeoff
+                takeoff_mask = df['flight_phase'] == 'Takeoff'
+                landing_mask = df['flight_phase'] == 'Landing'
+                
+                takeoff_indices = df[takeoff_mask].index.tolist()
+                landing_indices = df[landing_mask].index.tolist()
+                
+                if takeoff_indices and landing_indices:
+                    takeoff_start = takeoff_indices[0]
+                    landing_end = landing_indices[-1]
+                    
+                    # Extract Fuel_at_time_TE values in the range [Takeoff start, Landing end]
+                    trip_fuel_vals = df.loc[takeoff_start:landing_end, 'Fuel_at_time_TE'].astype(float)
+                    trip_fuel = trip_fuel_vals.sum()
+            except Exception as e:
+                print(f"Warning: could not calculate Trip_fuel: {e}")
+        
+        # Append summary rows to CSV file
+        with open(output_path, 'a') as f:
+            f.write('\n')  # blank line separator
+            if etow is not None:
+                f.write(f'ETOW,{etow}\n')
+            if total_fuel is not None:
+                f.write(f'Total_Fuel,{total_fuel}\n')
+            if trip_fuel is not None:
+                f.write(f'Trip_fuel,{trip_fuel}\n')
+            if total_co2 is not None:
+                f.write(f'Total_CO2,{total_co2}\n')
+        
+        print(f"Added summary: ETOW={etow}, Total_Fuel={total_fuel}, Trip_fuel={trip_fuel}, Total_CO2={total_co2}")
+    except Exception as e:
+        print(f"Warning: could not add summary rows: {e}")
 
 
 def process(input_path: str, output_path: str, compute_tas: bool = True, aircraft_type: Optional[str] = None) -> None:
@@ -343,7 +498,10 @@ def process(input_path: str, output_path: str, compute_tas: bool = True, aircraf
     CSV file in `input_path` will be processed and written to `output_path`
     preserving the filename.
     """
+    print("Input path:", repr(input_path))
     in_path = Path(input_path)
+    print(f"Is dir: {in_path.is_dir()}")
+    print(f"Starting process for {input_path}")
     out_path = Path(output_path)
 
     if in_path.is_dir():
@@ -369,12 +527,13 @@ def process(input_path: str, output_path: str, compute_tas: bool = True, aircraf
 
 
 def main(argv: Optional[list] = None) -> int:
+    print("Starting main")
     argv = argv if argv is not None else sys.argv[1:]
+    print("argv:", argv)
     # support: python process_adsb_pipeline.py input.csv output.csv [aircraft_type]
-    if len(argv) >= 2:
+    if len(argv) >= 3:
+        print("len >= 3")
         input_path, output_path = argv[0], argv[1]
-        # If the third CLI arg (aircraft_type) was provided, use it.
-        # Otherwise, prompt the user interactively so they can enter
         # an `aircraft_type` which will be applied to every row.
         aircraft_type = argv[2] if len(argv) >= 3 else None
         if aircraft_type is None:
@@ -383,6 +542,7 @@ def main(argv: Optional[list] = None) -> int:
                 aircraft_type = atype if atype != "" else None
             except Exception:
                 aircraft_type = None
+    
     else:
         # interactive fallback
         try:
@@ -393,10 +553,10 @@ def main(argv: Optional[list] = None) -> int:
         except Exception:
             print("Usage: python process_adsb_pipeline.py input.csv output.csv [aircraft_type]")
             return 2
-
-    process(input_path, output_path, aircraft_type=aircraft_type)
-    return 0
+    
+    print("Calling process")
+    process(input_path, output_path, compute_tas=True, aircraft_type=aircraft_type)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
