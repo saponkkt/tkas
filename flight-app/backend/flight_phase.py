@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 
-def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: str = "track") -> pd.DataFrame:
+def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: str = "track", rocd_col: str = "ROCD_m/s") -> pd.DataFrame:
     """
     กำหนด flight phase สำหรับแต่ละแถวใน DataFrame
     
@@ -21,8 +21,8 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
       โดยช่วงนี้ต้องอยู่ "หลัง Taxi_out" และ "ก่อน Initial_climb" (ช่วงก่อนบรรทัดแรกของ Initial_climb)
     - Initial_climb: altitude > 0 ft ถึง 2000 ft เฉพาะช่วงที่เกิด "หลัง Takeoff" และ "ก่อน Climb"
     - Climb: altitude > 2000 ft ถึง (cruise_altitude - 1 ft) (หลัง Initial_climb)
-    - Cruise: ช่วงที่ altitude สูงที่สุด และมีค่าซ้ำต่อกันมากกว่า 5 แถว (หลัง Climb และก่อน Descent)
-    - Descent: altitude เปลี่ยนจาก Cruise ลงมา ถึง > 8000 ft (หลัง Cruise และหลังช่วง Cruise ที่เป็น altitude สูงสุด)
+    - Cruise: altitude คงที่ AND ROCD_m/s ≈ 0 (หลัง Climb และก่อน Descent)
+    - Descent: altitude เปลี่ยนจาก Cruise ลงมา ถึง > 8000 ft (หลัง Cruise)
     - Approach: altitude 8000 ft ถึง 3000 ft (หลัง Descent)
     - Landing: altitude < 3000 ft ถึง 0 ft, track คงที่/ซ้ำเยอะ (หลัง Approach)
     - Taxi_in: altitude = 0 ft, track ไม่คงที่/เปลี่ยน (ช่วงท้ายสุด, หลัง Landing)
@@ -31,6 +31,7 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
         df: DataFrame ที่มีคอลัมน์ altitude และ track
         alt_col: ชื่อคอลัมน์ altitude (default: "altitude")
         track_col: ชื่อคอลัมน์ track (default: "track")
+        rocd_col: ชื่อคอลัมน์ ROCD_m/s (default: "ROCD_m/s")
     
     Returns:
         DataFrame ที่เพิ่มคอลัมน์ "flight_phase"
@@ -54,6 +55,13 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
     else:
         # ถ้าไม่มี track หรือ Direction ให้ใช้ค่า NaN สำหรับการตรวจสอบ
         track = pd.Series([np.nan] * len(df_out))
+    
+    # ตรวจสอบว่ามีคอลัมน์ ROCD_m/s หรือไม่
+    if rocd_col in df_out.columns:
+        rocd = pd.to_numeric(df_out[rocd_col], errors="coerce")
+    else:
+        # ถ้าไม่มี ROCD_m/s ให้สร้างจากการคำนวณ altitude diff
+        rocd = None
 
     # ในช่วงก่อนบิน (ground) เราจะยังไม่ตัดสินว่าเป็น Taxi_out หรือ Takeoff
     # ตัดสินใจช่วง Takeoff โดยย้อนจาก `Initial_climb` ในภายหลัง
@@ -61,7 +69,8 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
     # เริ่มต้นด้วยค่า Unknown
     phases = pd.Series(["Unknown"] * len(df_out), dtype=object)
     
-    # 1. หา Cruise Altitude (ใช้ค่า smoothed เพื่อไม่ให้ short dip ทำให้หลุดช่วง Cruise)
+    # 1. หา Cruise Altitude (ปรับ: ใช้ค่าสูงสุด แล้วเลือกแถวที่อยู่ใกล้ค่าสูงสุด
+    #    โดยไม่ต้องกำหนดว่าต้องซ้ำหลายแถว)
     cruise_altitude = _detect_cruise_altitude(altitude_smoothed)
     
     # 2. ตรวจสอบความคงที่ของ track (ใช้สำหรับแยก Landing/Taxi_in และ Taxi_out/Takeoff)
@@ -82,46 +91,27 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
     else:
         last_flying_idx = -1
     
-    # 4. หาช่วง Cruise โดยตรงจากข้อมูล (ดูที่การซ้ำของค่า)
+    # 4. ใช้ state machine สำหรับ Climb/Cruise/Descent ที่ยืดหยุ่นได้
+    # (จะกำหนด phases ผ่านฟังก์ชัน _assign_climb_cruise_descent_phases_v2 ด้านล่าง)
     cruise_start_idx = None
     cruise_end_idx = None
-    if cruise_altitude is not None:
-        # หาช่วงที่ altitude ใกล้เคียงกับ cruise_altitude (เลือก contiguous window ที่ยาวที่สุด)
-        # ใช้ค่า smoothed เพื่อลดผลกระทบจาก spikes สั้นๆ
-        altitude_rounded = np.floor(altitude_smoothed / 100) * 100
-        cruise_rounded = round(cruise_altitude / 100) * 100
-
-        # หา contiguous segments ที่อยู่ใน band (±50 ft) และเลือก segment ที่ยาวที่สุด
-        best_start = None
-        best_end = None
-        best_len = 0
-        i = 0
-        n = len(altitude_rounded)
-        while i < n:
-            if pd.isna(altitude_rounded.iloc[i]) or abs(altitude_rounded.iloc[i] - cruise_rounded) > 50:
-                i += 1
-                continue
-            start = i
-            while i < n and not pd.isna(altitude_rounded.iloc[i]) and abs(altitude_rounded.iloc[i] - cruise_rounded) <= 50:
-                i += 1
-            end = i - 1
-            seg_len = end - start + 1
-            if seg_len > best_len:
-                best_len = seg_len
-                best_start = start
-                best_end = end
-
-        if best_len > 0:
-            cruise_start_idx = best_start
-            cruise_end_idx = best_end
+    first_cruise_idx = None
     
-    # 5. จำแนก phases
+    # 5. จำแนก phases ด้วย state machine แบบใหม่
+    phases = _assign_climb_cruise_descent_phases_v2(
+        phases, altitude, altitude_smoothed, cruise_altitude, rocd=rocd
+    )
+    
     for i in range(len(df_out)):
         # ใช้ raw altitude สำหรับการตรวจสอบว่าเป็น ground
         alt_raw = altitude.iloc[i]
         # แต่ใช้ค่า smoothed สำหรับการตัดสิน phase (ป้องกัน short dip)
         alt = altitude_smoothed.iloc[i]
         is_ground = (alt_raw == 0) or (pd.isna(alt_raw)) or (alt_raw < 10)  # ถือว่าเป็น ground ถ้า < 10 ft
+
+        # ถ้า state machine กำหนด phase สำหรับแถวนี้ (Climb/Cruise/Descent) ให้ข้ามไป
+        if phases.iloc[i] in ["Climb", "Cruise", "Descent"]:
+            continue
         
         if is_ground:
             # Ground phases: Taxi_out, Takeoff, Landing, Taxi_in
@@ -201,54 +191,8 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
                     else:
                         phases.iloc[i] = "Unknown"
         else:
-            # Flying phases
-            # ตรวจสอบว่าเคยถึง Cruise แล้วหรือยัง (ดูจาก cruise_start_idx)
-            has_reached_cruise = (cruise_start_idx is not None and i >= cruise_start_idx)
-            has_passed_cruise = (cruise_end_idx is not None and i > cruise_end_idx)
-            
-            # ตรวจสอบว่าเป็น Cruise หรือไม่ (ดูที่การซ้ำของค่า)
-            is_cruise = False
-            if cruise_start_idx is not None and cruise_end_idx is not None:
-                if cruise_start_idx <= i <= cruise_end_idx:
-                        # ตรวจสอบว่า altitude ใกล้เคียงกับ cruise_altitude (ใช้การปัดลงแบบเดียวกับการหาช่วง)
-                        altitude_rounded = np.floor(alt / 100) * 100
-                        cruise_rounded = np.floor(cruise_altitude / 100) * 100
-                        if abs(altitude_rounded - cruise_rounded) <= 50:
-                            is_cruise = True
-            
-            if is_cruise:
-                phases.iloc[i] = "Cruise"
-            elif has_passed_cruise:
-                # ผ่าน Cruise แล้ว -> ต้องเป็น Descent, Approach, หรือ Landing
-                # if altitude suggests descent, guard against short transient dips
-                if alt > 8000:
-                    # look ahead a few rows to see if this was a short dip back to cruise
-                    lookahead = 5
-                    next_slice = altitude_smoothed.iloc[i+1 : i+1+lookahead]
-                    returned_to_cruise = False
-                    if cruise_altitude is not None and not next_slice.empty:
-                        # count how many of the next rows are near the cruise altitude (within 50 ft)
-                        near_cruise = (next_slice - cruise_altitude).abs() <= 50
-                        if int(near_cruise.sum()) >= max(1, len(next_slice) // 2):
-                            returned_to_cruise = True
-
-                    if returned_to_cruise:
-                        phases.iloc[i] = "Cruise"
-                    else:
-                        phases.iloc[i] = "Descent"
-                elif alt > 3000 and alt <= 8000:
-                    phases.iloc[i] = "Approach"
-                elif alt <= 3000 and alt > 0:
-                    phases.iloc[i] = "Landing"
-                else:
-                    phases.iloc[i] = "Unknown"
-            elif has_reached_cruise:
-                # ยังอยู่ในช่วง Cruise หรือใกล้ Cruise
-                if cruise_altitude is not None and abs(alt - cruise_altitude) <= 100:
-                    phases.iloc[i] = "Cruise"
-                else:
-                    phases.iloc[i] = "Climb"
-            elif alt > 0 and alt <= 2000:
+            # Flying phases (ที่ state machine ไม่ได้กำหนด)
+            if alt > 0 and alt <= 2000:
                 # Initial_climb: >0 ถึง 2000 ft
                 if i > 0 and phases.iloc[i-1] in ["Approach", "Descent", "Landing"]:
                     # มาจากด้านบนเพื่อจะลงพื้น -> Landing
@@ -257,18 +201,36 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
                     phases.iloc[i] = "Initial_climb"
             elif alt > 3000 and alt <= 8000:
                 # Approach: มากกว่า 3000–8000 ft (เมื่อเป็นการลงจอดตามบริบท)
-                if has_passed_cruise or (i > 0 and phases.iloc[i-1] in ["Descent", "Approach"]):
+                if i > 0 and phases.iloc[i-1] in ["Descent", "Approach"]:
                     phases.iloc[i] = "Approach"
                 else:
                     phases.iloc[i] = "Climb"
-            elif alt > 2000:
-                # Climb: มากกว่า 2000 ft (รวมช่วง 2000–3000 และสูงกว่า)
-                phases.iloc[i] = "Climb"
-            elif cruise_altitude is not None and alt < cruise_altitude:
-                # ยังไม่ถึง Cruise และ altitude ต่ำกว่า cruise_altitude แต่ไม่เข้า band อื่น -> Climb
-                phases.iloc[i] = "Climb"
+            elif alt > 8000:
+                # Check ROCD to determine phase
+                if rocd is not None and not pd.isna(rocd.iloc[i]):
+                    rocd_val = rocd.iloc[i]
+                    if rocd_val < -0.5:
+                        # Significant descent
+                        phases.iloc[i] = "Descent"
+                    elif abs(rocd_val) <= 0.5:
+                        # Check altitude stability for Cruise
+                        window_size = 10
+                        start_idx = max(0, i - window_size // 2)
+                        end_idx = min(len(altitude_smoothed), i + window_size // 2 + 1)
+                        alt_window = altitude_smoothed.iloc[start_idx:end_idx]
+                        alt_range = alt_window.max() - alt_window.min() if len(alt_window) > 1 else 0
+                        if alt_range <= 200:
+                            phases.iloc[i] = "Cruise"
+                        else:
+                            phases.iloc[i] = "Climb"
+                    else:
+                        # ROCD > 0.5, climbing
+                        phases.iloc[i] = "Climb"
+                else:
+                    phases.iloc[i] = "Climb"
             else:
                 phases.iloc[i] = "Unknown"
+    
 
     # 6. ปรับปรุงช่วง Takeoff ให้ตรงกับนิยามใหม่
     #    - หา Initial_climb ก่อน
@@ -289,13 +251,203 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
             phases.iloc[:first_flying_idx] = "Taxi_out"
 
     # 7. ปรับปรุง phases ให้ต่อเนื่องและสมเหตุสมผล
-    phases = _refine_flight_phases(phases, altitude, cruise_altitude, cruise_start_idx, cruise_end_idx)
+    phases = _refine_flight_phases(phases, altitude, altitude_smoothed, cruise_altitude, cruise_start_idx, cruise_end_idx)
     
     # 8. ปรับปรุง Landing/Taxi_in ตาม Direction ที่ altitude = 0 ft
     phases = _refine_landing_taxi_in_by_direction(phases, altitude, track, tolerance_deg=5.0)
     
     df_out["flight_phase"] = phases
     return df_out
+
+
+def _assign_climb_cruise_descent_phases_v2(
+    phases: pd.Series,
+    altitude: pd.Series,
+    altitude_smoothed: pd.Series,
+    cruise_altitude: Optional[float],
+    rocd: Optional[pd.Series] = None,
+    stability_window: int = 5,
+    stability_threshold_ft: float = 50.0,
+    min_descent_rows: int = 3,
+) -> pd.Series:
+    """
+    State machine สำหรับ Climb/Cruise/Descent ที่ยืดหยุ่นได้
+    
+    Logic:
+    1. Climb: altitude > 2000 ft และเพิ่มขึ้นต่อเนื่อง
+    2. Cruise: altitude คงที่ (เสถียร) + ROCD_m/s ≈ 0 หลังจาก Climb
+    3. Cruise → Climb: ถ้า altitude เพิ่มขึ้นต่อเนื่อง
+    4. Cruise → Descent: ถ้า altitude ลดลงต่อเนื่อง
+    5. Descent → Cruise: ถ้า altitude คงที่เสถียร + ROCD_m/s ≈ 0 ในช่วง Descent
+    6. Climb ≠→ Descent: Climb ต้องผ่าน Cruise ก่อน
+    
+    States:
+    0 = ground
+    1 = climbing (altitude increasing)
+    2 = cruise (altitude stable + ROCD ≈ 0)
+    3 = descending (altitude decreasing)
+    """
+    refined = phases.copy()
+    n = len(altitude_smoothed)
+    
+    if n == 0:
+        return refined
+    
+    # คำนวณความเปลี่ยนแปลง altitude (diff)
+    alt_diff = altitude_smoothed.diff()
+    
+    # State machine
+    state = 0  # 0=ground, 1=climbing, 2=cruise, 3=descending
+    stable_count = 0  # Counter for consecutive stable rows before entering Cruise
+    
+    for i in range(n):
+        alt = altitude_smoothed.iloc[i]
+        
+        # ถ้า altitude <= 10 ให้ข้าม (ground phase)
+        if pd.isna(alt) or alt <= 10:
+            continue
+        
+        if state == 0:  # Ground/before_climb
+            if alt > 2000:
+                state = 1
+                refined.iloc[i] = "Climb"
+            elif alt > 0:
+                refined.iloc[i] = "Initial_climb"
+        
+        elif state == 1:  # Climbing
+            # ตรวจสอบ: altitude ลดลงอย่างชัดเจนหรือไม่? (ต้อง < -75 ft/row) → เปลี่ยน state เป็น Descent
+            if i > 0 and alt_diff.iloc[i] < -75:
+                # เริ่มลดลงอย่างชัดเจน -> Descent
+                state = 3
+                refined.iloc[i] = "Descent"
+            # ตรวจสอบ: altitude เสถียร AND ROCD ≈ 0 -> Cruise
+            # OR: altitude range ≤ 75 ft in recent rows (bumpy cruise detection)
+            elif i > 0:
+                # Check past 10 rows for altitude stability (bumpy cruise indicator)
+                recent_range = min(10, i)  # Check more rows for stability
+                past_altitudes = altitude_smoothed.iloc[i-recent_range+1:i+1]
+                alt_range_past = past_altitudes.max() - past_altitudes.min() if len(past_altitudes) >= 2 else 0
+                
+                # Check ROCD (must be essentially 0, allow floating-point tolerance)
+                rocd_value = rocd.iloc[i] if rocd is not None else None
+                
+                # For Climb->Cruise transition, MUST have:
+                # 1. ROCD >= 0 (not descending) 
+                # 2. altitude range <= 1 ft (level off)
+                # 3. ROCD close to 0 (within ±0.001)
+                
+                # Check rocd_value explicitly - if ROCD < -0.5, change to Descent
+                if rocd_value is not None and rocd_value < -0.5:
+                    # Aircraft is descending significantly - change to Descent
+                    state = 3
+                    refined.iloc[i] = "Descent"
+                elif rocd_value is not None and rocd_value > 0.001:
+                    # ROCD is noticeably positive, don't enter Cruise yet
+                    stable_count = 0
+                    refined.iloc[i] = "Climb"
+                elif alt_range_past <= 1.0:
+                    # ROCD is ~0 (between -0.001 and +0.001) and altitude very stable (<= 1 ft)
+                    prev_alt = altitude_smoothed.iloc[i-1] if i > 0 else None
+                    if prev_alt is not None and abs(alt - prev_alt) <= 1.0:
+                        stable_count += 1
+                    else:
+                        stable_count = 1
+                    if stable_count >= stability_window:
+                        state = 2
+                        refined.iloc[i] = "Cruise"
+                    else:
+                        refined.iloc[i] = "Climb"
+                else:
+                    stable_count = 0
+                    refined.iloc[i] = "Climb"
+            elif alt > 2000:
+                # ไม่เพิ่มขึ้นและยังสูง -> ถือว่า Climb ต่อ
+                refined.iloc[i] = "Climb"
+            else:
+                refined.iloc[i] = "Initial_climb"
+        
+        elif state == 2:  # Cruise (Stable altitude + ROCD ≈ 0)
+            # Allow small altitude fluctuations while in Cruise (bumpy cruise)
+            # Entry/Exit are strict, but staying in Cruise can tolerate ROCD variations
+            recent_range = min(10, i)  # Check past 10 rows for stability
+            past_altitudes = altitude_smoothed.iloc[i-recent_range+1:i+1]
+            alt_range = past_altitudes.max() - past_altitudes.min() if len(past_altitudes) >= 2 else 0
+            
+            # Check ROCD - allow small variations for bumpy cruise (±0.5 m/s)
+            rocd_value = rocd.iloc[i] if rocd is not None else None
+            # Use explicit range check for stability (±0.5 m/s tolerance)
+            rocd_is_stable = (rocd_value is not None) and (rocd_value > -0.5 and rocd_value < 0.5)
+            
+            # PRIMARY RULE: Check ROCD < -0.5 (significant descent)
+            if rocd_value is not None and rocd_value < -0.5:
+                # Aircraft is descending significantly - exit Cruise
+                state = 3
+                if alt > 8000:
+                    refined.iloc[i] = "Descent"
+                elif alt > 3000:
+                    refined.iloc[i] = "Approach"
+                else:
+                    refined.iloc[i] = "Landing"
+            # Check for ROCD > 0.5 with significant altitude change
+            elif rocd_value is not None and rocd_value > 0.5 and alt_range > 75.0:
+                # Aircraft is climbing significantly -> exit Cruise to Climb
+                state = 1
+                refined.iloc[i] = "Climb"
+            # ROCD is stable (±0.5) - check if can stay in Cruise
+            elif rocd_is_stable and alt_range <= 50.0:
+                # Perfect cruise - ROCD stable AND altitude very stable
+                refined.iloc[i] = "Cruise"
+            elif rocd_is_stable and alt_range <= 75.0 and alt > 8000:
+                # Bumpy cruise - ROCD must be ~0 AND altitude within 75 ft
+                refined.iloc[i] = "Cruise"
+            else:
+                # Exit Cruise in all other cases
+                state = 1
+                refined.iloc[i] = "Climb"
+        
+        elif state == 3:  # Descending (or in Approach/Landing)
+            # MOST IMPORTANT: Check ROCD first
+            # User mandate: "ดูแค่คอลัม ROCD_m/s และ altitude เท่านั้น"
+            rocd_value = rocd.iloc[i] if rocd is not None else None
+            
+            # Check altitude stability in recent 2-row window
+            # Use the same window semantics as other states (i-recent_range+1 : i+1)
+            recent_range = min(2, i)
+            start_idx = max(0, i - recent_range + 1)
+            past_altitudes = altitude_smoothed.iloc[start_idx:i+1]
+            alt_range = past_altitudes.max() - past_altitudes.min() if len(past_altitudes) >= 2 else float('inf')
+            
+            # PRIMARY RULE: Any ROCD < -0.5 means aircraft is descending significantly (stay in Descent/Approach/Landing)
+            if rocd_value is not None and rocd_value < -0.5:
+                # Aircraft is descending significantly - classify by altitude
+                if alt > 8000:
+                    refined.iloc[i] = "Descent"
+                elif alt > 3000:
+                    refined.iloc[i] = "Approach"
+                else:
+                    refined.iloc[i] = "Landing"
+            # SECONDARY RULE: If ROCD between -0.5 and 0.5 m/s AND altitude stable → Cruise (level flight)
+            elif rocd_value is not None and rocd_value > -0.5 and rocd_value < 0.5 and alt_range <= 50 and alt > 8000:
+                state = 2
+                refined.iloc[i] = "Cruise"
+            # Tertiary: Altitude stable but altitude range shows some movement, classify by altitude range
+            elif alt_range > 150:
+                if alt > 8000:
+                    refined.iloc[i] = "Descent"
+                elif alt > 3000:
+                    refined.iloc[i] = "Approach"
+                else:
+                    refined.iloc[i] = "Landing"
+            else:
+                # Ambiguous - stay in current descent phase
+                if alt > 8000:
+                    refined.iloc[i] = "Descent"
+                elif alt > 3000:
+                    refined.iloc[i] = "Approach"
+                else:
+                    refined.iloc[i] = "Landing"
+    
+    return refined
 
 
 def _detect_cruise_altitude(altitude: pd.Series, min_stable_rows: int = 6, tolerance_ft: float = 50.0) -> Optional[float]:
@@ -507,10 +659,12 @@ def _refine_landing_taxi_in_by_direction(
     
     last_flying_idx = last_non_zero_idx[-1]
     
-    # หาแถวแรกที่ altitude = 0 ft หลังบินลง
+    # หาแถวแรกที่ altitude = 0 ft หลังบินลง (CRITICAL: ต้องไม่ใช่ NaN)
     first_zero_after_flight_idx = None
     for i in range(last_flying_idx + 1, len(altitude)):
-        if altitude.iloc[i] == 0 or (pd.isna(altitude.iloc[i]) == False and altitude.iloc[i] < 10):
+        alt = altitude.iloc[i]
+        # ต้องมีค่า (ไม่ใช่ NaN) และ altitude = 0 เท่านั้น
+        if not pd.isna(alt) and (alt == 0 or alt < 10):
             first_zero_after_flight_idx = i
             break
     
@@ -548,10 +702,12 @@ def _refine_landing_taxi_in_by_direction(
     
     # ตรวจสอบแถวที่ altitude = 0 ft ทั้งหมด
     # สร้างรายการแถว ground ต่อเนื่องตั้งแต่ first_zero_after_flight_idx
+    # CRITICAL: ต้องไม่มี NaN
     ground_indices = []
     for i in range(first_zero_after_flight_idx, len(altitude)):
         alt = altitude.iloc[i]
-        is_ground = (alt == 0) or (pd.isna(alt) == False and alt < 10)
+        # ต้องมีค่า (ไม่ใช่ NaN) และ altitude = 0 เท่านั้น
+        is_ground = (not pd.isna(alt)) and (alt == 0 or alt < 10)
         if not is_ground:
             break
         ground_indices.append(i)
@@ -607,124 +763,36 @@ def _refine_landing_taxi_in_by_direction(
     return refined
 
 
-def _refine_flight_phases(phases: pd.Series, altitude: pd.Series, cruise_altitude: Optional[float], cruise_start_idx: Optional[int] = None, cruise_end_idx: Optional[int] = None) -> pd.Series:
+def _refine_flight_phases(phases: pd.Series, altitude: pd.Series, altitude_smoothed: pd.Series, cruise_altitude: Optional[float], cruise_start_idx: Optional[int] = None, cruise_end_idx: Optional[int] = None) -> pd.Series:
     """
-    ปรับปรุง flight phases ให้ต่อเนื่องและสมเหตุสมผล
+    Refine flight phases - add minimal Landing detection
     
-    - แก้ไข phases ที่ไม่ต่อเนื่อง
-    - ตรวจสอบลำดับของ phases ให้ถูกต้อง
-    - แก้ไข Landing และ Takeoff ให้ถูกต้อง
+    Key rules:
+    - Landing: altitude 0-3000 ft after Descent/Approach, or between Approach/Descent and Taxi_in
+    - Prevent Initial_climb after Approach/Descent (must come after Taxi_out/Takeoff)
+    - Do NOT promote Climb to Cruise
     """
     refined = phases.copy()
     
-    # 1. แก้ไข Landing phase - ต้องเป็นช่วงที่ altitude ลดลงจาก 3000 ถึง 0 และต่อจาก Approach
-    for i in range(len(refined)):
+    # Simple Landing detection: altitude 0-3000 ft after Descent/Approach
+    for i in range(1, len(refined)):
         alt = altitude.iloc[i]
-        if alt <= 3000 and alt > 0:
-            # ตรวจสอบว่าเป็น Landing หรือไม่ (ดูจาก phase ก่อนหน้า)
+        
+        # If altitude <= 3000 and > 0, check if it should be Landing
+        if alt > 0 and alt <= 3000:
             if i > 0:
                 prev_phase = refined.iloc[i-1]
-                if prev_phase in ["Approach", "Descent", "Landing"]:
-                    # Landing ต้องต่อจาก Approach/Descent/Landing
+                if prev_phase in ["Descent", "Approach", "Landing"]:
+                    # Coming from descent/approach -> Landing
                     refined.iloc[i] = "Landing"
-                elif prev_phase in ["Initial_climb", "Climb"]:
-                    # ยังไม่ควรเป็น Landing
-                    pass
-    
-    # 2. แก้ไข Takeoff phase - ต้องเป็นช่วงที่ altitude = 0 ก่อน Initial_climb
-    for i in range(len(refined) - 1):
-        if refined.iloc[i] == "Takeoff" and altitude.iloc[i] == 0:
-            # ตรวจสอบว่า phase ถัดไปเป็น Initial_climb หรือไม่
-            if i + 1 < len(refined) and refined.iloc[i+1] == "Initial_climb":
-                # ถูกต้องแล้ว
-                pass
-            elif i + 1 < len(refined) and altitude.iloc[i+1] > 0:
-                # ถ้าแถวถัดไปมี altitude > 0 แต่ phase ไม่ใช่ Initial_climb
-                # อาจต้องแก้ไข
-                pass
-    
-    # 3. แก้ไข phases ที่อยู่ระหว่าง Climb และ Cruise
-    if cruise_altitude is not None:
-        for i in range(1, len(refined) - 1):
-            alt = altitude.iloc[i]
-            if refined.iloc[i] == "Climb" and abs(alt - cruise_altitude) <= 50:
-                # ถ้าใกล้ cruise altitude มาก ให้เปลี่ยนเป็น Cruise
-                # แต่แค่เปลี่ยนถ้าอยู่ในช่วง cruise ที่ตรวจพบแล้ว (i >= cruise_start_idx)
-                # หรือถ้ามี Cruise ปรากฏก่อนหน้านี้
-                if (cruise_start_idx is not None and i >= cruise_start_idx) or ("Cruise" in refined.iloc[:i].values):
-                    refined.iloc[i] = "Cruise"
-            elif refined.iloc[i] == "Cruise" and alt < (cruise_altitude - 200):
-                # ถ้า altitude ลดลงมากจาก cruise -> Descent
-                refined.iloc[i] = "Descent"
-    
-    # 4. แก้ไข phases ที่กระโดดข้าม (เช่น จาก Climb ไป Landing โดยไม่มี Cruise/Descent/Approach)
-    for i in range(1, len(refined)):
-        prev_phase = refined.iloc[i-1]
-        curr_phase = refined.iloc[i]
-        alt = altitude.iloc[i]
         
-        # ถ้ากระโดดจาก Climb ไป Landing/Approach โดยไม่มี Cruise
-        if prev_phase == "Climb" and curr_phase in ["Landing", "Approach"]:
-            # ตรวจสอบ altitude
-            if cruise_altitude is not None and alt < cruise_altitude:
-                if alt > 8000:
-                    refined.iloc[i] = "Descent"
-                elif alt > 3000:
-                    refined.iloc[i] = "Approach"
-        
-        # ถ้ากระโดดจาก Cruise ไป Landing โดยไม่มี Descent/Approach
-        if prev_phase == "Cruise" and curr_phase == "Landing":
-            if alt > 8000:
-                refined.iloc[i] = "Descent"
-            elif alt > 3000:
-                refined.iloc[i] = "Approach"
+        # Prevent Initial_climb after Descent/Approach
+        if refined.iloc[i] == "Initial_climb":
+            if i > 0:
+                prev_phase = refined.iloc[i-1]
+                if prev_phase in ["Descent", "Approach", "Landing"]:
+                    # After descent/approach, should be Landing, not Initial_climb
+                    refined.iloc[i] = "Landing"
     
-    # 5. แก้ไข phases ที่อยู่ติดกันให้ต่อเนื่อง (แต่ไม่เปลี่ยน Landing/Takeoff)
-    for i in range(1, len(refined) - 1):
-        prev_phase = refined.iloc[i-1]
-        curr_phase = refined.iloc[i]
-        next_phase = refined.iloc[i+1]
-        
-        # ถ้า phase กลางไม่ตรงกับ phase ก่อนและหลัง
-        if prev_phase == next_phase and curr_phase != prev_phase:
-            # ถ้าเป็น phase เดียวกันติดกัน ให้เปลี่ยน phase กลางให้เหมือนกัน
-            # แต่ไม่เปลี่ยน Landing/Takeoff ถ้า altitude = 0
-            if prev_phase != "Unknown":
-                if altitude.iloc[i] == 0 and curr_phase in ["Landing", "Takeoff"]:
-                    # ไม่เปลี่ยน Landing/Takeoff ที่ altitude = 0
-                    pass
-                else:
-                    refined.iloc[i] = prev_phase
-    
-        # 6. บังคับลำดับเฟสให้ไม่ย้อนกลับ (monotonic phases)
-        # ลำดับเฟสที่ยอมรับ
-        phase_order = [
-            "Taxi_out",
-            "Takeoff",
-            "Initial_climb",
-            "Climb",
-            "Cruise",
-            "Descent",
-            "Approach",
-            "Landing",
-            "Taxi_in",
-        ]
-        phase_to_idx = {p: i for i, p in enumerate(phase_order)}
-
-        max_idx = -1
-        for i in range(len(refined)):
-            p = refined.iloc[i]
-            idx = phase_to_idx.get(p, None)
-            if idx is None:
-                # Unknown or unexpected phase: keep current max if applicable
-                if max_idx >= 0:
-                    refined.iloc[i] = phase_order[max_idx]
-            else:
-                if idx < max_idx:
-                    # ถ้าเฟสย้อนกลับ ให้เปลี่ยนเป็นเฟสสูงสุดที่เคยเจอ
-                    refined.iloc[i] = phase_order[max_idx]
-                else:
-                    max_idx = idx
-
-        return refined
+    return refined
 
