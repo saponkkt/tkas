@@ -88,7 +88,9 @@ def add_mt_column(
     df: pd.DataFrame,
     alt_col: str = "altitude",
     fuel_at_time_col: str = "Fuel_at_time_kg",
+    mt_offset: float = 0.0,
 ) -> pd.DataFrame:
+    
     """Return copy of `df` with new `mt` column computed per user spec.
 
     Rules implemented:
@@ -126,11 +128,11 @@ def add_mt_column(
         mask = alt >= 10000
         true_pos = list(mask[mask].index)
         if len(true_pos) == 0:
-            # no row reaches 10000 — set mt as NA
+            # no row reaches 10000 — cannot compute mt per spec
             df_out["mt"] = pd.Series([pd.NA] * n, index=df_out.index)
             return df_out
 
-        # convert index to integer positions
+        # convert index to integer positions (first altitude >= 10000)
         pos0 = int(np.where(mask.values)[0][0])
 
         # set mt at crossing to 0.0
@@ -148,6 +150,13 @@ def add_mt_column(
         # replace infinities / failed casts with NA
         mt_series = pd.Series(mt_arr, index=df_out.index, name="mt")
         mt_series = mt_series.replace([np.inf, -np.inf], pd.NA)
+
+        # apply optional absolute offset (allows matching Excel absolute mass)
+        try:
+            mt_series = mt_series.astype(float) + float(mt_offset)
+        except Exception:
+            # if conversion fails, leave as-is
+            pass
 
         df_out["mt"] = mt_series
     except Exception:
@@ -288,8 +297,14 @@ def optimize_mt0(
     phase_col: str = "flight_phase",
     phase_val: str = "Climb",
     use_scipy: bool = True,
+    mt_offset: float = 0.0,
+    mt0_lower_bound=None,
+    excel_nonneg: bool = False,
+    target_mt0: float = None,
+    weight_aero: float = 1.0,
+    weight_target: float = 1.0,
 ):
-    """Optimize mt at the first altitude>=10000 row to minimize Sumsq.
+    """Optimize mt at the first altitude>=10000 row to minimize combined objective.
 
     Returns (df_out, result) where df_out has updated `mt`, `f2`, `Sumsq` and
     `result` contains the optimized mt0 value and objective value.
@@ -300,8 +315,14 @@ def optimize_mt0(
     - Given mt0, rebuild full `mt` array by accumulating fuel (backwards and
       forwards) using the same rules as `add_mt_column` but with mt[pos0]=mt0.
     - Compute `f2` and `Sumsq` (restricted to phase==phase_val and alt range).
-    - Minimize Sumsq over mt0 using `scipy.optimize.minimize_scalar` if
-      available and requested; otherwise use a grid + refinement search.
+    - Minimize combined objective: weight_aero*Sumsq + weight_target*(mt0-target_mt0)^2
+      over mt0 using `scipy.optimize.minimize_scalar` if available and requested;
+      otherwise use a grid + refinement search.
+    
+    Parameters:
+    - target_mt0: if provided, optimizer will try to match mt[0] close to this value
+    - weight_aero: relative weight for aerodynamic (Sumsq) term (default 1.0)
+    - weight_target: relative weight for target matching term (default 1.0)
     """
     df_in = df.copy()
     # ensure fuel_at_time exists
@@ -323,22 +344,32 @@ def optimize_mt0(
 
     mask_cross = alt >= 10000.0
     if not mask_cross.any():
-        raise ValueError("No row with altitude >= 10000 found; cannot optimize mt0")
+        # per spec: only optimize when a row altitude >= 10000 exists
+        # return mt computed by add_mt_column and indicate skipped optimization
+        df_out = add_mt_column(df_in)
+        result = {"mt0": None, "objective": None, "pos0": None, "skipped": "no_alt_ge_10000"}
+        return df_out, result
 
     pos0 = int(np.where(mask_cross.values)[0][0])
+
+    # require that the anchor row is in the requested phase (e.g. 'Climb')
+    phases = df_in.get(phase_col)
+    if phases is None or phases.iloc[pos0] != phase_val:
+        df_out = add_mt_column(df_in)
+        result = {"mt0": None, "objective": None, "pos0": pos0, "skipped": "pos0_not_in_phase"}
+        return df_out, result
     n = len(df_in)
 
-    # helpers to build mt from mt0
+    # helpers to build mt from mt0 (initial mass offset)
+    # Use cumulative sum: mt[i] = mt0 - cumsum_fuel[i]
     def build_mt_from_mt0(mt0: float) -> np.ndarray:
-        mt_arr = np.full(n, np.nan, dtype=float)
-        mt_arr[pos0] = float(mt0)
-        # backwards
-        for i in range(pos0 - 1, -1, -1):
-            mt_arr[i] = mt_arr[i + 1] + float(fuel_at_time.iloc[i + 1])
-        # forwards
-        for i in range(pos0 + 1, n):
-            mt_arr[i] = mt_arr[i - 1] - float(fuel_at_time.iloc[i])
-        return mt_arr
+        try:
+            fuel_sum = fuel_at_time.cumsum().astype(float)
+            mt_arr = (float(mt0) - fuel_sum).to_numpy(dtype=float)
+            return mt_arr
+        except Exception:
+            # fallback: return array of NaN
+            return np.full(n, np.nan, dtype=float)
 
     # objective: compute Sumsq scalar for given mt0
     p1 = pd.to_numeric(df_in.get("P1"), errors="coerce").astype(float)
@@ -357,8 +388,21 @@ def optimize_mt0(
         # drop NaNs
         selected = selected[~np.isnan(selected)]
         if selected.size == 0:
-            return float("inf")
-        return float(np.sum(selected ** 2))
+            # no valid rows in the required altitude/phase window — skip optimization
+            sumsq_term = float("inf")
+        else:
+            sumsq_term = float(np.sum(selected ** 2))
+        
+        # Combine aerodynamic objective with target matching if provided
+        if target_mt0 is not None and weight_target > 0:
+            # Include a term to minimize distance from target mt[0] value
+            target_error = float(mt0 - target_mt0) ** 2
+            # Combined objective: balance aerodynamic fit with target matching
+            combined_obj = weight_aero * sumsq_term + weight_target * target_error
+            return combined_obj
+        else:
+            # Only minimize Sumsq
+            return sumsq_term
 
     # bounds for mt0: heuristic based on P1/P3 magnitudes, fallback to a large default
     p1_arr = pd.to_numeric(df_in.get("P1"), errors="coerce").astype(float).values
@@ -368,15 +412,44 @@ def optimize_mt0(
         pos_p1 = p1_arr[p1_arr > 0]
         max_abs_p3 = np.nanmax(np.abs(p3_arr)) if p3_arr.size > 0 else 0.0
         if pos_p1.size > 0 and max_abs_p3 > 0:
-            est = float(np.sqrt(max_abs_p3 / float(np.min(pos_p1))))
-            bound = max(1e5, est * 4.0)
+            min_pos_p1 = float(np.min(pos_p1))
+            if min_pos_p1 > 1e-10:  # Avoid division by very small numbers
+                est = float(np.sqrt(max_abs_p3 / min_pos_p1))
+                # tighter, more conservative bound: scale estimate by 2
+                # and ensure a reasonable minimum bound to allow typical aircraft masses
+                # Cap bound at 1e6 to avoid overflow
+                bound = max(1e5, min(1e6, est * 2.0))
+            else:
+                bound = 1e5
         else:
             total_fuel = float(np.abs(fuel_at_time).sum())
+            # fallback: use total fuel scaled but keep lower baseline
             bound = max(1e5, total_fuel * 100.0)
     except Exception:
         bound = 1e6
 
-    lo, hi = -bound, bound
+    # determine search bounds. By default allow negative/positive search
+    # unless caller requests Excel-like non-negative behavior or supplies
+    # an explicit lower bound.
+    if excel_nonneg:
+        # When requiring non-negative mt values, set lo to ensure mt stays non-negative
+        # even at the end of flight: mt[end] = mt0 - total_fuel >= 0
+        # So: mt0 >= total_fuel
+        total_fuel_burned = float(np.abs(fuel_at_time).sum())
+        lo = max(0.0, total_fuel_burned)
+        # If target_mt0 is provided, ensure the upper bound allows it
+        if target_mt0 is not None:
+            hi = max(bound, float(target_mt0) * 1.1)  # Allow 10% margin above target
+        else:
+            hi = bound
+    elif mt0_lower_bound is not None:
+        try:
+            lo = float(mt0_lower_bound)
+        except Exception:
+            lo = -bound
+        hi = bound
+    else:
+        lo, hi = -bound, bound
 
     # try scipy first if requested
     mt0_opt = None
@@ -420,6 +493,14 @@ def optimize_mt0(
 
     # build final df_out with optimized mt, f2, Sumsq
     mt_final = build_mt_from_mt0(mt0_opt)
+    # apply optional absolute offset so callers can request absolute mt
+    try:
+        mt_final = mt_final.astype(float) + float(mt_offset)
+    except Exception:
+        try:
+            mt_final = mt_final + float(mt_offset)
+        except Exception:
+            pass
     df_out = df_in.copy()
     df_out["mt"] = pd.Series(mt_final, index=df_out.index)
     df_out["f2"] = (pd.to_numeric(df_out.get("P1"), errors="coerce") * (df_out["mt"] ** 2)) + (
