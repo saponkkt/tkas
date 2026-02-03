@@ -94,7 +94,7 @@ def _normalize_input_df(df: pd.DataFrame) -> pd.DataFrame:
         col_map[acol] = 'altitude'
 
     # speed
-    scol = pick('ground_speed', 'speed', 'gs')
+    scol = pick('ground_speed', 'speed', 'gs', 'TAS_kt')
     if scol:
         col_map[scol] = 'ground_speed'
 
