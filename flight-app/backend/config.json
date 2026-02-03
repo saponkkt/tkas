@@ -16,7 +16,7 @@
         "Cf3": 11.031,
         "Cf4": 54252,
         "Cfcr": 0.93,
-        "CD0,deltaLDG":  0.0235,
+        "cd0_delta":  0.0235,
         "CR": {
             "config": "clean",
             "CD0": 0.0235,
@@ -79,7 +79,7 @@
         "Cf3": 9.134,
         "Cf4": 79668,
         "Cfcr": 0.95423,
-        "CD0,deltaLDG":  0.0312,
+        "cd0_delta":  0.0312,
         "CR": {
             "config": "clean",
             "CD0": 0.025149,
