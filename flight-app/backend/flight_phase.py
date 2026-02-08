@@ -401,6 +401,15 @@ def _assign_climb_cruise_descent_phases_v2(
                     refined.iloc[i] = "Approach"
                 else:
                     refined.iloc[i] = "Landing"
+            # CRITICAL RULE: If altitude already BELOW cruise AND descending → exit Cruise to Descent
+            elif cruise_altitude is not None and alt < cruise_altitude and rocd_value is not None and rocd_value < -0.3:
+                state = 3
+                if alt > 8000:
+                    refined.iloc[i] = "Descent"
+                elif alt > 3000:
+                    refined.iloc[i] = "Approach"
+                else:
+                    refined.iloc[i] = "Landing"
             # Stay in Cruise if at cruise level and ROCD not too negative
             elif at_cruise_level and rocd_value is not None and rocd_value > -0.75:
                 refined.iloc[i] = "Cruise"
@@ -437,8 +446,10 @@ def _assign_climb_cruise_descent_phases_v2(
             # This only catches genuine cruise plateau scenarios
             at_cruise_level = cruise_altitude is not None and alt >= cruise_altitude - 30 and alt <= cruise_altitude + 100
             
-            # PRIMARY RULE: If at cruise level with small ROCD (±0.5) -> Cruise (cruise plateau/bumpy cruise)
-            if at_cruise_level and rocd_value is not None and rocd_value > -0.5 and rocd_value < 0.5:
+            # PRIMARY RULE: If at cruise level with VERY SMALL ROCD (±0.2) AND altitude >= cruise -> Cruise plateau
+            # CRITICAL: Don't mark as Cruise if below cruise altitude or ROCD significantly negative
+            if (at_cruise_level and rocd_value is not None and rocd_value > -0.2 and rocd_value < 0.2 
+                and (cruise_altitude is None or alt >= cruise_altitude)):
                 state = 2
                 refined.iloc[i] = "Cruise"
             # SECONDARY RULE: Any ROCD < -0.5 means aircraft is descending significantly (stay in Descent/Approach/Landing)
@@ -450,8 +461,10 @@ def _assign_climb_cruise_descent_phases_v2(
                     refined.iloc[i] = "Approach"
                 else:
                     refined.iloc[i] = "Landing"
-            # TERTIARY RULE: If ROCD between -0.5 and 0.5 m/s AND altitude stable → Cruise (level flight)
-            elif rocd_value is not None and rocd_value > -0.5 and rocd_value < 0.5 and alt_range <= 50 and alt > 8000:
+            # TERTIARY RULE: If ROCD between -0.5 and 0.5 m/s AND altitude stable AND not below cruise → Cruise (level flight)
+            # CRITICAL: Don't apply if altitude is at or below cruise level - that's continuous descent, not plateau
+            elif (rocd_value is not None and rocd_value > -0.5 and rocd_value < 0.5 and alt_range <= 50 and alt > 8000 
+                  and (cruise_altitude is None or alt > cruise_altitude)):
                 state = 2
                 refined.iloc[i] = "Cruise"
             # Quaternary: Altitude stable but altitude range shows some movement, classify by altitude range
