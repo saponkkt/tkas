@@ -331,20 +331,29 @@ def _assign_climb_cruise_descent_phases_v2(
                 # Check ROCD (must be essentially 0, allow floating-point tolerance)
                 rocd_value = rocd.iloc[i] if rocd is not None else None
                 
-                # For Climb->Cruise transition, MUST have:
-                # 1. ROCD >= 0 (not descending) 
-                # 2. altitude range <= 1 ft (level off)
-                # 3. ROCD close to 0 (within ±0.001)
+                # Check if altitude is at or above cruise level (with 50 ft tolerance below for plateau)
+                # This catches the SL792 case where cruise_alt = 33038 and we have rows at 33073-33047
+                at_cruise_level = cruise_altitude is not None and alt >= cruise_altitude - 50
                 
-                # Check rocd_value explicitly - if ROCD < -0.5, change to Descent
-                if rocd_value is not None and rocd_value < -0.5:
+                # Check rocd_value explicitly - if ROCD < -0.75, change to Descent
+                if rocd_value is not None and rocd_value < -0.75:
                     # Aircraft is descending significantly - change to Descent
                     state = 3
                     refined.iloc[i] = "Descent"
-                elif rocd_value is not None and rocd_value > 0.001:
-                    # ROCD is noticeably positive, don't enter Cruise yet
+                # PRIORITY RULE: If at cruise level (alt >= cruise_alt - 50), mark as Cruise
+                # except significant descent (< -0.75 m/s)
+                elif at_cruise_level and rocd_value is not None and rocd_value >= -0.75:
+                    # At cruise altitude with small/moderate vertical speed -> Cruise
+                    state = 2
+                    refined.iloc[i] = "Cruise"
+                elif rocd_value is not None and rocd_value > 1.0:
+                    # ROCD is strongly positive, don't enter Cruise yet (still climbing)
                     stable_count = 0
                     refined.iloc[i] = "Climb"
+                elif alt_range_past <= 100.0 and rocd_value is not None and rocd_value > -0.5 and rocd_value < 0.5:
+                    # Stable altitude range with small ROCD -> Cruise
+                    state = 2
+                    refined.iloc[i] = "Cruise"
                 elif alt_range_past <= 1.0:
                     # ROCD is ~0 (between -0.001 and +0.001) and altitude very stable (<= 1 ft)
                     prev_alt = altitude_smoothed.iloc[i-1] if i > 0 else None
@@ -378,8 +387,11 @@ def _assign_climb_cruise_descent_phases_v2(
             # Use explicit range check for stability (±0.5 m/s tolerance)
             rocd_is_stable = (rocd_value is not None) and (rocd_value > -0.5 and rocd_value < 0.5)
             
-            # PRIMARY RULE: Check ROCD < -0.5 (significant descent)
-            if rocd_value is not None and rocd_value < -0.5:
+            # Check if altitude is at or near cruise level (with 150 ft tolerance below, 100 ft above)
+            at_cruise_level = cruise_altitude is not None and alt >= cruise_altitude - 150 and alt <= cruise_altitude + 100
+            
+            # PRIMARY RULE: Check ROCD < -0.75 (significant descent - exit cruise)
+            if rocd_value is not None and rocd_value < -0.75:
                 # Aircraft is descending significantly - exit Cruise
                 state = 3
                 if alt > 8000:
@@ -388,6 +400,9 @@ def _assign_climb_cruise_descent_phases_v2(
                     refined.iloc[i] = "Approach"
                 else:
                     refined.iloc[i] = "Landing"
+            # Stay in Cruise if at cruise level and ROCD not too negative
+            elif at_cruise_level and rocd_value is not None and rocd_value > -0.75:
+                refined.iloc[i] = "Cruise"
             # Check for ROCD > 0.5 with significant altitude change
             elif rocd_value is not None and rocd_value > 0.5 and alt_range > 75.0:
                 # Aircraft is climbing significantly -> exit Cruise to Climb
@@ -417,8 +432,16 @@ def _assign_climb_cruise_descent_phases_v2(
             past_altitudes = altitude_smoothed.iloc[start_idx:i+1]
             alt_range = past_altitudes.max() - past_altitudes.min() if len(past_altitudes) >= 2 else float('inf')
             
-            # PRIMARY RULE: Any ROCD < -0.5 means aircraft is descending significantly (stay in Descent/Approach/Landing)
-            if rocd_value is not None and rocd_value < -0.5:
+            # Check if altitude is at cruise level (within 30 ft margin) - stricter check
+            # This only catches genuine cruise plateau scenarios
+            at_cruise_level = cruise_altitude is not None and alt >= cruise_altitude - 30 and alt <= cruise_altitude + 100
+            
+            # PRIMARY RULE: If at cruise level with small ROCD (±0.5) -> Cruise (cruise plateau/bumpy cruise)
+            if at_cruise_level and rocd_value is not None and rocd_value > -0.5 and rocd_value < 0.5:
+                state = 2
+                refined.iloc[i] = "Cruise"
+            # SECONDARY RULE: Any ROCD < -0.5 means aircraft is descending significantly (stay in Descent/Approach/Landing)
+            elif rocd_value is not None and rocd_value < -0.5:
                 # Aircraft is descending significantly - classify by altitude
                 if alt > 8000:
                     refined.iloc[i] = "Descent"
@@ -426,11 +449,11 @@ def _assign_climb_cruise_descent_phases_v2(
                     refined.iloc[i] = "Approach"
                 else:
                     refined.iloc[i] = "Landing"
-            # SECONDARY RULE: If ROCD between -0.5 and 0.5 m/s AND altitude stable → Cruise (level flight)
+            # TERTIARY RULE: If ROCD between -0.5 and 0.5 m/s AND altitude stable → Cruise (level flight)
             elif rocd_value is not None and rocd_value > -0.5 and rocd_value < 0.5 and alt_range <= 50 and alt > 8000:
                 state = 2
                 refined.iloc[i] = "Cruise"
-            # Tertiary: Altitude stable but altitude range shows some movement, classify by altitude range
+            # Quaternary: Altitude stable but altitude range shows some movement, classify by altitude range
             elif alt_range > 150:
                 if alt > 8000:
                     refined.iloc[i] = "Descent"
