@@ -351,7 +351,7 @@ def _assign_climb_cruise_descent_phases_v2(
                     # ROCD is strongly positive, don't enter Cruise yet (still climbing)
                     stable_count = 0
                     refined.iloc[i] = "Climb"
-                elif alt_range_past <= 100.0 and rocd_value is not None and rocd_value > -0.1 and rocd_value < 0.1:
+                elif ((alt_range_past <= 100.0 or (cruise_altitude is not None and abs(alt - cruise_altitude) <= 30)) and rocd_value is not None and rocd_value > -0.1 and rocd_value < 0.1):
                     # Stable altitude range with VERY SMALL ROCD (±0.1) -> Cruise (not strong climb/descent)
                     state = 2
                     refined.iloc[i] = "Cruise"
