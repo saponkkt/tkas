@@ -331,19 +331,20 @@ def _assign_climb_cruise_descent_phases_v2(
                 # Check ROCD (must be essentially 0, allow floating-point tolerance)
                 rocd_value = rocd.iloc[i] if rocd is not None else None
                 
-                # Check if altitude is at or above cruise level (with 50 ft tolerance below for plateau)
-                # This catches the SL792 case where cruise_alt = 33038 and we have rows at 33073-33047
-                at_cruise_level = cruise_altitude is not None and alt >= cruise_altitude - 50
+                # Check if altitude is WELL ABOVE cruise level (alt >= cruise_alt + 30 ft)
+                # This avoids marking rows as Cruise while still actively climbing TO cruise altitude
+                # Row 1667 at 33075 will be Cruise (33075 >= 33038+30), but rows 1665-1666 stay Climb (33062 < 33068)
+                at_cruise_level = cruise_altitude is not None and alt >= cruise_altitude + 30
                 
                 # Check rocd_value explicitly - if ROCD < -0.75, change to Descent
                 if rocd_value is not None and rocd_value < -0.75:
                     # Aircraft is descending significantly - change to Descent
                     state = 3
                     refined.iloc[i] = "Descent"
-                # PRIORITY RULE: If at cruise level (alt >= cruise_alt - 50), mark as Cruise
-                # except significant descent (< -0.75 m/s)
-                elif at_cruise_level and rocd_value is not None and rocd_value >= -0.75:
-                    # At cruise altitude with small/moderate vertical speed -> Cruise
+                # PRIORITY RULE: If well above cruise altitude (alt >= cruise_alt + 30), mark as Cruise
+                # This catches aircraft that have clearly reached cruise level
+                elif at_cruise_level:
+                    # Well above cruise altitude -> Cruise
                     state = 2
                     refined.iloc[i] = "Cruise"
                 elif rocd_value is not None and rocd_value > 1.0:
