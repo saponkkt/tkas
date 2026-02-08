@@ -351,8 +351,8 @@ def _assign_climb_cruise_descent_phases_v2(
                     # ROCD is strongly positive, don't enter Cruise yet (still climbing)
                     stable_count = 0
                     refined.iloc[i] = "Climb"
-                elif alt_range_past <= 100.0 and rocd_value is not None and rocd_value > -0.5 and rocd_value < 0.5:
-                    # Stable altitude range with small ROCD -> Cruise
+                elif alt_range_past <= 100.0 and rocd_value is not None and rocd_value > -0.1 and rocd_value < 0.1:
+                    # Stable altitude range with VERY SMALL ROCD (±0.1) -> Cruise (not strong climb/descent)
                     state = 2
                     refined.iloc[i] = "Cruise"
                 elif alt_range_past <= 1.0:
@@ -460,6 +460,7 @@ def _assign_climb_cruise_descent_phases_v2(
                 state = 2
                 refined.iloc[i] = "Cruise"
             # SECONDARY RULE: Any ROCD < -0.5 means aircraft is descending significantly (stay in Descent/Approach/Landing)
+            # Keep at -0.5 threshold here (this is about detecting DESCENT, so -0.5 is appropriate)
             elif rocd_value is not None and rocd_value < -0.5:
                 # Aircraft is descending significantly - classify by altitude
                 if alt > 8000:
@@ -474,9 +475,9 @@ def _assign_climb_cruise_descent_phases_v2(
                 # Level flight or near-level at high altitude -> Cruise
                 state = 2
                 refined.iloc[i] = "Cruise"
-            # TERTIARY RULE: If ROCD between -0.5 and 0.5 m/s AND altitude stable AND not below cruise → Cruise (level flight)
-            # CRITICAL: Don't apply if altitude is at or below cruise level - that's continuous descent, not plateau
-            elif (rocd_value is not None and rocd_value > -0.5 and rocd_value < 0.5 and alt_range <= 50 and alt > 8000 
+            # TERTIARY RULE: If ROCD between -0.1 and 0.1 m/s AND altitude stable AND not below cruise → Cruise (level flight)
+            # CRITICAL: Tightened from ±0.5 to ±0.1 to prevent active climbing from being marked as Cruise
+            elif (rocd_value is not None and rocd_value > -0.1 and rocd_value < 0.1 and alt_range <= 50 and alt > 8000 
                   and (cruise_altitude is None or alt > cruise_altitude)):
                 state = 2
                 refined.iloc[i] = "Cruise"
