@@ -367,6 +367,13 @@ def _assign_climb_cruise_descent_phases_v2(
                         refined.iloc[i] = "Cruise"
                     else:
                         refined.iloc[i] = "Climb"
+                # NEW RULE: Catch level flight at any altitude
+                # If ROCD is essentially 0 (very small positive or negative) AND altitude very stable AND high altitude
+                # Then transition to Cruise (catches intermediate cruise levels like SL759 rows at 33000)
+                elif rocd_value is not None and abs(rocd_value) <= 0.02 and alt_range_past <= 5.0 and alt > 8000:
+                    # Level flight with essentially zero ROCD -> Cruise
+                    state = 2
+                    refined.iloc[i] = "Cruise"
                 else:
                     stable_count = 0
                     refined.iloc[i] = "Climb"
@@ -446,10 +453,10 @@ def _assign_climb_cruise_descent_phases_v2(
             # This only catches genuine cruise plateau scenarios
             at_cruise_level = cruise_altitude is not None and alt >= cruise_altitude - 30 and alt <= cruise_altitude + 100
             
-            # PRIMARY RULE: If at cruise level with VERY SMALL ROCD (±0.2) AND altitude >= cruise -> Cruise plateau
-            # CRITICAL: Don't mark as Cruise if below cruise altitude or ROCD significantly negative
-            if (at_cruise_level and rocd_value is not None and rocd_value > -0.2 and rocd_value < 0.2 
-                and (cruise_altitude is None or alt >= cruise_altitude)):
+            # PRIMARY RULE: If at cruise level with VERY SMALL ROCD (±0.2) → Cruise plateau
+            # CRITICAL: Don't mark as Cruise if we're clearly in continuous descent (altitude < cruise_alt AND ROCD negative)
+            # But DO mark as Cruise if altitude is stable with ROCD≈0, even if not at the max detected cruise_altitude
+            if (at_cruise_level and rocd_value is not None and rocd_value > -0.2 and rocd_value < 0.2):
                 state = 2
                 refined.iloc[i] = "Cruise"
             # SECONDARY RULE: Any ROCD < -0.5 means aircraft is descending significantly (stay in Descent/Approach/Landing)
@@ -461,6 +468,12 @@ def _assign_climb_cruise_descent_phases_v2(
                     refined.iloc[i] = "Approach"
                 else:
                     refined.iloc[i] = "Landing"
+            # NEW CATCH-ALL: If altitude is stable (ROCD ±0.02) AND altitude very stable (range ≤5ft) AND high altitude
+            # Then mark as Cruise even if not at detected cruise_altitude (catches intermediate levels like SL759 at 33000)
+            elif rocd_value is not None and abs(rocd_value) <= 0.02 and alt_range <= 5.0 and alt > 8000:
+                # Level flight or near-level at high altitude -> Cruise
+                state = 2
+                refined.iloc[i] = "Cruise"
             # TERTIARY RULE: If ROCD between -0.5 and 0.5 m/s AND altitude stable AND not below cruise → Cruise (level flight)
             # CRITICAL: Don't apply if altitude is at or below cruise level - that's continuous descent, not plateau
             elif (rocd_value is not None and rocd_value > -0.5 and rocd_value < 0.5 and alt_range <= 50 and alt > 8000 
