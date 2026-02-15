@@ -232,7 +232,13 @@ def add_Fuel_TE(
     fuel.loc[take_idx_h] = fmin.loc[take_idx_h]
 
     fuel.loc[mask_initial] = fnom.loc[mask_initial]
-    fuel.loc[mask_climb] = fnom.loc[mask_climb]
+    
+    # Climb: use fnom, but if fnom is negative use fmin instead
+    climb_idx_pos = mask_climb & (fnom >= 0)
+    climb_idx_neg = mask_climb & (fnom < 0)
+    fuel.loc[climb_idx_pos] = fnom.loc[climb_idx_pos]
+    fuel.loc[climb_idx_neg] = fmin.loc[climb_idx_neg]
+    
     fuel.loc[mask_cruise] = fcr.loc[mask_cruise]
     fuel.loc[mask_descent] = fmin.loc[mask_descent]
     fuel.loc[mask_approach] = fapld.loc[mask_approach]
