@@ -76,7 +76,7 @@ def add_P3_column(df: pd.DataFrame) -> pd.DataFrame:
 
         aero_term = 0.5 * density * (tas ** 2) * S
 
-        df_out["P3"] = (cd0 * aero_term) - (thrust * 0.75)
+        df_out["P3"] = (cd0 * aero_term) - (thrust * 0.76)
         df_out["P3"] = df_out["P3"].replace([np.inf, -np.inf], pd.NA)
     except Exception:
         df_out["P3"] = pd.NA
@@ -390,10 +390,35 @@ def optimize_mt0(
     n = len(df_in)
 
     # Build mt array from mt[0] value: mt[i] = mt[0] - cumsum_fuel[i]
+    # Reference point: set mt = mt0 at first altitude >= alt_min
     def build_mt_from_mt0(mt0: float) -> np.ndarray:
         try:
-            fuel_sum = fuel_at_time.cumsum().astype(float)
-            mt_arr = (float(mt0) - fuel_sum).to_numpy(dtype=float)
+            # หา position แรกที่ alt >= alt_min
+            mask = alt >= alt_min
+            true_pos = list(mask[mask].index)
+            
+            if len(true_pos) == 0:
+                # ถ้าไม่มี altitude >= alt_min ใช้วิธีเดิม
+                fuel_sum = fuel_at_time.cumsum().astype(float)
+                mt_arr = (float(mt0) - fuel_sum).to_numpy(dtype=float)
+                return mt_arr
+            
+            # หา integer position ของ crossing
+            pos0 = int(np.where(mask.values)[0][0])
+            
+            # mt[pos0] = mt0 (optimize value at reference point)
+            fuel_arr = fuel_at_time.values.astype(float)
+            mt_arr = np.full(n, np.nan, dtype=float)
+            mt_arr[pos0] = float(mt0)
+            
+            # Forward: i > pos0: mt[i] = mt[i-1] - fuel[i]
+            for i in range(pos0 + 1, n):
+                mt_arr[i] = mt_arr[i - 1] - float(fuel_arr[i])
+            
+            # Backward: i < pos0: mt[i] = mt[i+1] + fuel[i+1]
+            for i in range(pos0 - 1, -1, -1):
+                mt_arr[i] = mt_arr[i + 1] + float(fuel_arr[i + 1])
+            
             return mt_arr
         except Exception:
             return np.full(n, np.nan, dtype=float)
