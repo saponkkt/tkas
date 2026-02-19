@@ -26,9 +26,34 @@ from pathlib import Path
 
 import pandas as pd
 import numpy as np
+import time
 
 from multi_tas import compute_tas_for_dataframe
+import sys
+# Clear any cached imports to ensure latest code is used
+if 'flight_phase' in sys.modules:
+    del sys.modules['flight_phase']
+if 'variable_mass' in sys.modules:
+    del sys.modules['variable_mass']
+if 'thrust' in sys.modules:
+    del sys.modules['thrust']
+if 'Fuel' in sys.modules:
+    del sys.modules['Fuel']
+if 'Mass' in sys.modules:
+    del sys.modules['Mass']
+
 from flight_phase import detect_flight_phase
+
+# Verify we're using the correct flight_phase module
+import flight_phase as fp_module
+print(f"flight_phase module file: {fp_module.__file__}")
+import inspect
+source_lines = inspect.getsource(fp_module.detect_flight_phase)
+if "rocd_val_case3" in source_lines:
+    print("OK: Using FIXED flight_phase.py (has rocd_val_case3 post-processing)")
+else:
+    print("WARNING: Using OLD flight_phase.py (missing rocd_val_case3 post-processing)")
+
 import variable_mass
 import thrust as thrust_mod
 import Fuel as fuel_mod
@@ -93,7 +118,10 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
     # normalization is available to `detect_flight_phase`.
     if compute_tas:
         try:
+            t0 = time.time()
             df_new = compute_tas_for_dataframe(df, input_csv=input_path)
+            t1 = time.time()
+            print(f"Timing: compute_tas_for_dataframe took {t1-t0:.2f}s")
             if len(df_new) == 0:
                 print("Warning: compute_tas returned empty DataFrame, skipping TAS computation")
                 # continue without TAS
@@ -161,45 +189,46 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
         except Exception as _e:
             print(f"Warning: could not compute ROCD_m/s: {_e}")
 
+        t0 = time.time()
         df = detect_flight_phase(df)
+        t1 = time.time()
+        print(f"Timing: detect_flight_phase took {t1-t0:.2f}s")
         print("Added column: flight_phase")
-        # Post-processing: if ROCD indicates stable (≈0) and altitude is constant
-        # for a small window, promote phase to Cruise to catch immediate plateaus.
+        # Debug: Check red rows right after detect_flight_phase
         try:
-            if 'ROCD_m/s' in df.columns and 'altitude' in df.columns:
-                alt = pd.to_numeric(df['altitude'], errors='coerce')
-                alt_sm = alt.rolling(window=3, center=True, min_periods=1).median().bfill().ffill()
-                rocd = pd.to_numeric(df['ROCD_m/s'], errors='coerce').fillna(0)
-                for i in range(len(df)):
-                    if i > 0 and df.loc[i, 'flight_phase'] == 'Climb':
-                        recent_range = min(2, i)
-                        past_altitudes = alt_sm.iloc[i-recent_range+1:i+1]
-                        alt_range = past_altitudes.max() - past_altitudes.min() if len(past_altitudes) >= 2 else 0
-                        if alt_range <= 50 and abs(rocd.iloc[i]) <= 0.1:
-                            df.at[i, 'flight_phase'] = 'Cruise'
-                print('Post-processed flight_phase using ROCD stability (small window)')
-        except Exception as _e:
-            print(f'Warning: post-process ROCD fix failed: {_e}')
+            red_check = df.iloc[2043-1:2072]
+            print(f"DEBUG: Red rows after detect_flight_phase: Cruise={( red_check['flight_phase'] == 'Cruise').sum()}/30")
+        except:
+            pass
+        # Post-processing disabled: detect_flight_phase() now includes Cases 2-4 handling
+        # that properly handles Climb at cruise altitude and plateau detection
     except Exception as e:
         print(f"Warning: detect_flight_phase failed: {e}")
 
     # 3. Add UTC split columns (delta_t, sum_t, etc.)
     try:
+        t0 = time.time()
         df = variable_mass.add_utc_split_columns(df, utc_col="UTC")
+        t1 = time.time()
+        print(f"Timing: add_utc_split_columns took {t1-t0:.2f}s")
         print("Added time split columns (delta_t (s), sum_t (s), sum_t (min))")
     except Exception as e:
         print(f"Warning: add_utc_split_columns failed: {e}")
 
     # 4. Compute thrust (will try to detect phase if missing)
     try:
+        t0 = time.time()
         thrust_series = thrust_mod.compute_thrust_N(df, type_col="aircraft_type")
         df["Thrust_N"] = thrust_series
+        t1 = time.time()
+        print(f"Timing: compute_thrust_N took {t1-t0:.2f}s")
         print("Computed column: Thrust_N")
     except Exception as e:
         print(f"Warning: compute_thrust_N failed: {e}")
 
     # 5. Compute fuel columns
     try:
+        t0_fuel = time.time()
         # ensure intermediate fuel columns (use aircraft_type column from pipeline)
         df = fuel_mod.add_fnom_column(df, type_col="aircraft_type")
         df = fuel_mod.add_fmin_column(df, type_col="aircraft_type")
@@ -209,6 +238,8 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
         df = fuel_mod.add_fuel_column(df, type_col="aircraft_type")
         df = fuel_mod.add_fuel_at_time_column(df, type_col="aircraft_type")
         df = fuel_mod.add_fuel_sum_with_time_column(df, type_col="aircraft_type")
+        t1_fuel = time.time()
+        print(f"Timing: fuel helpers took {t1_fuel-t0_fuel:.2f}s")
         print("Computed fuel columns and cumulative fuel")
         # Diagnostics: print presence/counts of key fuel-related columns for debugging
         key_cols = [
@@ -289,6 +320,9 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
         weight_aero = 1.0
         weight_target = 0.0
         
+        # Save flight_phase before optimization (in case optimize_mt0 doesn't preserve it)
+        flight_phase_backup = df['flight_phase'].copy() if 'flight_phase' in df.columns else None
+        
         df_opt, result = mass_mod.optimize_mt0(
             df,
             target_mt0=target_mt,
@@ -301,6 +335,9 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
             print(f"Optimized mt0={opt_mt0:.2f}, objective={result.get('objective', 'N/A')}")
             print(f"Optimized mt[0]={df_opt['mt'].iloc[0]:.2f}")
             df = df_opt
+            # ALWAYS restore flight_phase from backup (not just if missing)
+            if flight_phase_backup is not None:
+                df['flight_phase'] = flight_phase_backup
         else:
             print(f"Optimization skipped: {result.get('skipped', 'unknown reason')}")
     except Exception as e:
@@ -338,7 +375,7 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
                     # altitude may be in meters already; diff gives meters if so
                     dt = df["delta_t (s)"].astype(float).replace({0: np.nan})
                     # compute altitude diff; if altitude is in feet convert elsewhere — assume meters here
-                    rocd_ms = df["altitude"].astype(float).diff().fillna(0) / dt.fillna(method="ffill").fillna(1)
+                    rocd_ms = df["altitude"].astype(float).diff().fillna(0) / dt.ffill().fillna(1)
                     df["ROCD_m/s"] = rocd_ms.fillna(0)
                     print("Computed ROCD_m/s from altitude and delta_t (s)")
                 else:
@@ -432,9 +469,25 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
         df["aircraft_type"] = aircraft_type if aircraft_type is not None else ""
         print(f"Ensured aircraft_type column in output (set to '{df['aircraft_type'].iloc[0]}' for rows)")
 
+    # Ensure `flight_phase` exists in output (fallback to avoid missing column)
+    if 'flight_phase' not in df.columns:
+        df['flight_phase'] = 'Unknown'
+        print("Warning: flight_phase missing; added fallback 'Unknown' column before saving")
+
+    # Reorder columns: put flight_phase near the front for visibility
+    cols = list(df.columns)
+    if 'flight_phase' in cols:
+        cols.remove('flight_phase')
+        # Insert flight_phase as column 3 (after likely: timestamp, latitude, longitude / altitude, speed)
+        insert_pos = min(5, len(cols))  # Insert near the front but not at position 0
+        cols.insert(insert_pos, 'flight_phase')
+        df = df[cols]
+        print(f"Reordered columns: flight_phase moved to position {insert_pos}")
+
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(output_path, index=False)
     print(f"Saved output to: {output_path}")
+    print(f"flight_phase column stats: {df['flight_phase'].value_counts().to_dict()}")
     
     # 7. Add summary rows at the end of CSV
     # Extract summary values
