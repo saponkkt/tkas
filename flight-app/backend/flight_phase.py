@@ -111,7 +111,7 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
         alt_raw = altitude.iloc[i]
         # แต่ใช้ค่า smoothed สำหรับการตัดสิน phase (ป้องกัน short dip)
         alt = altitude_smoothed.iloc[i]
-        is_ground = (alt_raw == 0) or (pd.isna(alt_raw)) or (alt_raw < 10)  # ถือว่าเป็น ground ถ้า < 10 ft
+        is_ground = (alt_raw == 0) or (pd.isna(alt_raw)) or (alt_raw < 1)  # ถือว่าเป็น ground ถ้า < 1 ft
 
         # ถ้า state machine กำหนด phase สำหรับแถวนี้ (Climb/Cruise/Descent) ให้ข้ามไป
         if phases.iloc[i] in ["Climb", "Cruise", "Descent"]:
@@ -204,9 +204,20 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
                 else:
                     phases.iloc[i] = "Initial_climb"
             elif alt > 3000 and alt <= 8000:
-                # Approach: มากกว่า 3000–8000 ft (เฉพาะเมื่อมาจาก Descent เท่านั้น)
-                if i > 0 and phases.iloc[i-1] == "Descent":
-                    phases.iloc[i] = "Approach"
+                # Approach: มากกว่า 3000–8000 ft
+                if i > 0:
+                    prev_phase = phases.iloc[i-1]
+                    # Check if truly descending (use raw altitude for true altitude change)
+                    alt_diff_raw = altitude.iloc[i] - altitude.iloc[i-1] if i > 0 else 0
+                    is_descending = alt_diff_raw < -0.001  # True descent, not floating point noise
+                    
+                    # RELAXED RULE: If altitude is descending, can be Approach regardless of predecessor
+                    # (More lenient - FIX: Mid-altitude section will validate and override if needed)
+                    if is_descending:
+                        phases.iloc[i] = "Approach"
+                    else:
+                        # Not descending, must be Climb
+                        phases.iloc[i] = "Climb"
                 else:
                     phases.iloc[i] = "Climb"
             elif alt > 8000:
@@ -229,8 +240,26 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
                 phases.iloc[i] = "Unknown"
     
 
-    # 6. Fix Approach continuity: Approach ONLY when coming from Descent AND actively descending
+    # 6. FIX: Make Approach "sticky" approach - once in approach, stay there until landing
+    # This prevents oscillation between Climb and Approach when altitude vibrates slightly
+    for i in range(len(df_out)):
+        alt = altitude_smoothed.iloc[i]
+        current_phase = phases.iloc[i]
+        prev_phase = phases.iloc[i-1] if i > 0 else "Unknown"
+        
+        # STICKY RULE: Once predecessor is Approach at mid-altitude, keep it Approach
+        if alt >= 3000 and alt <= 8000 and prev_phase == "Approach":
+            # Stay in Approach until we drop below 3000 ft
+            phases.iloc[i] = "Approach"
+        
+        # Override other phases that shouldn't occur in approach range coming from Approach
+        elif alt >= 3000 and alt <= 8000 and current_phase == "Climb" and prev_phase == "Approach":
+            # Don't allow transition back to Climb from Approach - stay Approach
+            phases.iloc[i] = "Approach"
+    
+    # 7. Fix Approach continuity: Approach ONLY when coming from Descent AND actively descending
     # Use alt_diff from smoothed altitude (consistent with state machine)
+    # (Note: sticky Approach rule above now handles most oscillation problems)
     alt_diff = altitude_smoothed.diff().to_numpy(dtype=float)
     
     in_descent_approach = False
@@ -241,19 +270,27 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
         
         # Check altitude direction using smoothed diffs (consistency with state machine)
         # FILTER OUT floating point noise: if very small, treat as stable
+        # STRICT THRESHOLDS: require significant altitude change (> 0.01 after smoothing)
         is_descending = (alt_diff_val < -0.01 and abs(raw_alt_diff) > 0.001)  # True descent
         is_ascending = (alt_diff_val > 0.01 and abs(raw_alt_diff) > 0.001)     # True ascent
+        current_phase = phases.iloc[i]  # Get current phase for secondary checks
         
         if alt > 3000 and alt <= 8000:
             # In Approach altitude range (3000-8000 ft)
-            # Note: Approach assignment is handled by post-processing section with lookahead logic
-            # This section only handles Climb override for ascending altitudes
+            # CRITICAL RULE: If altitude is INCREASING, MUST be Climb (never Approach)
+            # Approach only valid when altitude is STRICTLY DECREASING from previous row
             
             if is_ascending:
                 # CRITICAL: If altitude is INCREASING through this range, MUST be Climb
                 # Override any state machine label - climbing never stays in Approach
                 phases.iloc[i] = "Climb"
-            # For descending: skip here, will be handled by post-processing section with lookahead
+            elif current_phase == "Approach":
+                # Even if state machine assigned Approach, verify it's truly descending
+                # If altitude is NOT descending, override to Climb
+                if not is_descending:
+                    phases.iloc[i] = "Climb"
+                # else: keep Approach (altitude is descending, valid assignment)
+            # For other phases in this altitude range: keep as-is, descent handling below
 
         
         elif alt < 3000 and alt > 10:
@@ -356,7 +393,26 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
             # If at 3000-8000 ft and predecessor suggests descent/approach sequence,
             # should check if heading to landing regardless of state machine classification
             if altitude_smoothed.iloc[i] >= 3000 and altitude_smoothed.iloc[i] <= 8000:
-                # Check all possible descent sequence predecessors (including from Climb)
+                # CRITICAL: Validate altitude is truly descending before marking Approach
+                alt_diff_raw = altitude.iloc[i] - altitude.iloc[i-1] if i > 0 else 0
+                prev_phase = phases.iloc[i-1] if i > 0 else "Unknown"
+                
+                # Check if truly descending (not just noise, not zero)
+                is_truly_descending = alt_diff_raw < -0.001
+                is_flat_or_climbing = alt_diff_raw >= -0.001
+                
+                if is_flat_or_climbing:
+                    # Altitude is flat (ROCD≈0) or climbing - CANNOT be Approach
+                    # Only exception: if predecessor is Approach AND we're in approach phase (sticky Approach)
+                    if phases.iloc[i] == "Approach" and prev_phase == "Approach":
+                        # Keep Approach - it's sticky/continuous descent
+                        continue
+                    elif phases.iloc[i] == "Approach":
+                        # Override to Climb (first entry into Approach with flat/climbing altitude)
+                        phases.iloc[i] = "Climb"
+                    continue
+                
+                # Check all possible descent sequence predecessors (only if truly descending)
                 is_from_descent = (phases.iloc[i-1] == "Descent")
                 is_from_approach = (phases.iloc[i-1] == "Approach")
                 is_from_climb_at_midalt = (phases.iloc[i-1] == "Climb" and altitude_smoothed.iloc[i-1] >= 3000)
@@ -483,6 +539,18 @@ def detect_flight_phase(df: pd.DataFrame, alt_col: str = "altitude", track_col: 
         pass  # If rounding fails, continue with original altitude
 
     df_out["flight_phase"] = phases
+    
+    # FINAL FIX: Make Approach "sticky" - once in Approach, stay until below 3000 ft
+    # This prevents oscillation between Climb and Approach due to altitude vibration
+    for i in range(1, len(df_out)):
+        alt = df_out['altitude'].iloc[i]
+        current_phase = df_out['flight_phase'].iloc[i]
+        prev_phase = df_out['flight_phase'].iloc[i-1]
+        
+        # If previous was Approach and we're still in approach altitude range, MUST stay Approach
+        if alt >= 3000 and alt <= 8000 and prev_phase == "Approach":
+            df_out.loc[df_out.index[i], 'flight_phase'] = "Approach"
+    
     return df_out
 
 
@@ -577,6 +645,14 @@ def _assign_climb_cruise_descent_phases_v2(
             if i > 0:
                 current_diff = alt_diff_arr[i] if i < len(alt_diff_arr) else np.nan
                 raw_alt_diff = raw_alt_arr[i] - raw_alt_arr[i-1] if i > 0 else np.nan
+                prev_phase = refined.iloc[i-1] if i > 0 else "Unknown"
+                
+                # CRITICAL: Once we're in Approach range (3000-8000 ft), stay in Approach until Landing
+                # This prevents oscillation between Climb and Approach
+                if prev_phase == "Approach" and alt >= 3000 and alt <= 8000:
+                    # Stay in Approach - don't revert to Climb even if ROCD momentarily becomes 0
+                    refined.iloc[i] = "Approach"
+                    continue
                 
                 # IMMEDIATE CHECK: Use raw altitude to detect descent
                 # This catches cases where smoothing delays detection
@@ -689,6 +765,14 @@ def _assign_climb_cruise_descent_phases_v2(
 
         elif state == 3:  # Descending (or in Approach/Landing)
             if i > 0:
+                # CRITICAL FIX: Prevent reverting from Approach back to Descent
+                # Once in Approach, stay in Approach until Landing
+                prev_phase = refined.iloc[i-1] if i > 0 else "Unknown"
+                if prev_phase == "Approach" and alt >= 3000 and alt <= 8000:
+                    # Stay in Approach - don't revert to Descent
+                    refined.iloc[i] = "Approach"
+                    continue
+                
                 current_diff = alt_diff_arr[i] if i < len(alt_diff_arr) else np.nan
                 # Check last 3 rows
                 last_3_start = max(0, i - 2)
@@ -708,9 +792,15 @@ def _assign_climb_cruise_descent_phases_v2(
                         refined.iloc[i] = "Climb"
                         continue
                     elif descent_count >= 1:
-                        state = 3
-                        refined.iloc[i] = "Descent"
-                        continue
+                        # NEW FIX: Check if descent is real or just floating point noise
+                        raw_alt_diff = raw_alt_arr[i] - raw_alt_arr[i-1] if i > 0 else np.nan
+                        is_floating_noise = (not np.isnan(raw_alt_diff) and abs(raw_alt_diff) < 0.001)
+                        
+                        if not is_floating_noise:
+                            state = 3
+                            refined.iloc[i] = "Descent"
+                            continue
+                        # If just noise, stay in Descent state but don't re-assign
                     elif (descent_count == 0 and alt_range <= 50.0 and cruise_altitude is not None and abs(alt - cruise_altitude) <= 50.0):
                         state = 2
                         refined.iloc[i] = "Cruise"
@@ -940,7 +1030,7 @@ def _refine_landing_taxi_in_by_direction(
     for i in range(last_flying_idx + 1, len(altitude)):
         alt = altitude.iloc[i]
         # ต้องมีค่า (ไม่ใช่ NaN) และ altitude = 0 เท่านั้น
-        if not pd.isna(alt) and (alt == 0 or alt < 10):
+        if not pd.isna(alt) and (alt == 0 or alt < 1):
             first_zero_after_flight_idx = i
             break
     
@@ -983,7 +1073,7 @@ def _refine_landing_taxi_in_by_direction(
     for i in range(first_zero_after_flight_idx, len(altitude)):
         alt = altitude.iloc[i]
         # ต้องมีค่า (ไม่ใช่ NaN) และ altitude = 0 เท่านั้น
-        is_ground = (not pd.isna(alt)) and (alt == 0 or alt < 10)
+        is_ground = (not pd.isna(alt)) and (alt == 0 or alt < 1)
         if not is_ground:
             break
         ground_indices.append(i)
