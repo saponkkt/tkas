@@ -183,8 +183,7 @@ def compute_f2_series(
         p3 = pd.to_numeric(df.get(p3_col), errors="coerce")
         mt = pd.to_numeric(df.get(mt_col), errors="coerce")
 
-        with pd.option_context("mode.use_inf_as_na", True):
-            f2 = (p1 * (mt ** 2)) + (p2 * mt) + p3
+        f2 = (p1 * (mt ** 2)) + (p2 * mt) + p3
 
         f2.name = "f2"
         f2 = f2.replace([np.inf, -np.inf], pd.NA)
