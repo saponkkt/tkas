@@ -12,6 +12,7 @@ result in `out_col`.
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 from thrust import get_config_param_series
 import numpy as np
@@ -103,8 +104,7 @@ def add_fap_ld(
     fnom = pd.to_numeric(df[fnom_col], errors="coerce")
     fmin = pd.to_numeric(df[fmin_col], errors="coerce")
 
-    with pd.option_context("mode.use_inf_as_na", True):
-        fap = pd.concat([fnom, fmin], axis=1).max(axis=1)
+    fap = pd.concat([fnom, fmin], axis=1).max(axis=1)
 
     df[out_col] = fap
     return df
@@ -136,8 +136,7 @@ def add_fcr_TE(
     thrust = pd.to_numeric(df[thrust_col], errors="coerce")
     cfcr = pd.to_numeric(get_config_param_series(df, "Cfcr", type_col=type_col), errors="coerce")
 
-    with pd.option_context("mode.use_inf_as_na", True):
-        fcr = eta * thrust * cfcr * 1e-3 / 60.0
+    fcr = eta * thrust * cfcr * 1e-3 / 60.0
 
     df[out_col] = fcr
     return df
@@ -231,7 +230,11 @@ def add_Fuel_TE(
     take_idx_h = mask_takeoff & (thrust.fillna(0) > 1_000_000)
     fuel.loc[take_idx_h] = fmin.loc[take_idx_h]
 
-    fuel.loc[mask_initial] = fnom.loc[mask_initial]
+    # Initial_climb: fnom unless thrust > 1e6 then fmin
+    init_idx = mask_initial & (thrust.fillna(0) <= 1_000_000)
+    fuel.loc[init_idx] = fnom.loc[init_idx]
+    init_idx_h = mask_initial & (thrust.fillna(0) > 1_000_000)
+    fuel.loc[init_idx_h] = fmin.loc[init_idx_h]
     
     # Climb: use fnom, but if fnom is negative use fmin instead
     climb_idx_pos = mask_climb & (fnom >= 0)
@@ -286,8 +289,7 @@ def add_Fuel_at_time_TE(
     fuel = pd.to_numeric(df[fuel_col], errors="coerce")
     dt = pd.to_numeric(df[delta_t_col], errors="coerce")
 
-    with pd.option_context("mode.use_inf_as_na", True):
-        df[out_col] = fuel * dt
+    df[out_col] = fuel * dt
 
     return df
 
@@ -350,8 +352,7 @@ def add_CO2_at_time_TE(
 
     fat = pd.to_numeric(df[fuel_at_time_col], errors="coerce")
 
-    with pd.option_context("mode.use_inf_as_na", True):
-        df[out_col] = fat * float(factor)
+    df[out_col] = fat * float(factor)
 
     return df
 
