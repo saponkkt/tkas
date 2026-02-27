@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 from thrust import get_config_param_series
@@ -25,8 +26,7 @@ def compute_eta_kg_per_min_per_kN(
         cf2 = pd.to_numeric(get_config_param_series(df, "Cf2", type_col=type_col), errors="coerce")
         tas = pd.to_numeric(df.get(tas_col), errors="coerce")
 
-        with pd.option_context("mode.use_inf_as_na", True):
-            eta = cf1 * (1.0 + (tas / cf2))
+        eta = cf1 * (1.0 + (tas / cf2))
 
         eta.name = "eta_kg_per_min_per_kN"
         return eta
@@ -69,8 +69,7 @@ def compute_fnom_kg_per_s(
         eta = pd.to_numeric(df.get(eta_col), errors="coerce")
         thrust = pd.to_numeric(df.get(thrust_col), errors="coerce")
 
-        with pd.option_context("mode.use_inf_as_na", True):
-            fnom = eta * thrust * 1e-3 / 60.0
+        fnom = eta * thrust * 1e-3 / 60.0
 
         fnom.name = "fnom_kg_per_s"
         return fnom
@@ -123,8 +122,7 @@ def compute_fmin_kg_per_s(
         cf4 = pd.to_numeric(get_config_param_series(df, "Cf4", type_col=type_col), errors="coerce")
         alt = pd.to_numeric(df.get(alt_col), errors="coerce")
 
-        with pd.option_context("mode.use_inf_as_na", True):
-            fmin = cf3 * (1.0 - (alt / cf4)) / 60.0
+        fmin = cf3 * (1.0 - (alt / cf4)) / 60.0
 
         fmin.name = "fmin_kg_per_s"
         return fmin
@@ -162,8 +160,7 @@ def compute_fapld_kg_per_s(
         fnom = pd.to_numeric(df.get(fnom_col), errors="coerce")
         fmin = pd.to_numeric(df.get(fmin_col), errors="coerce")
 
-        with pd.option_context("mode.use_inf_as_na", True):
-            fapld = pd.concat([fnom, fmin], axis=1).max(axis=1)
+        fapld = pd.concat([fnom, fmin], axis=1).max(axis=1)
 
         fapld.name = "fapld_kg_per_s"
         return fapld
@@ -232,8 +229,7 @@ def compute_fcr_kg_per_s(
         thrust = pd.to_numeric(df.get(thrust_col), errors="coerce")
         cfcr = pd.to_numeric(get_config_param_series(df, "Cfcr", type_col=type_col), errors="coerce")
 
-        with pd.option_context("mode.use_inf_as_na", True):
-            fcr = eta * thrust * cfcr * 1e-3 / 60.0
+        fcr = eta * thrust * cfcr * 1e-3 / 60.0
 
         fcr.name = "fcr_kg_per_s"
         return fcr
@@ -417,8 +413,7 @@ def compute_fuel_at_time_kg(
         fuel_rate = pd.to_numeric(df.get(fuel_rate_col), errors="coerce")
         delta_t = pd.to_numeric(df.get(delta_t_col), errors="coerce")
 
-        with pd.option_context("mode.use_inf_as_na", True):
-            fuel_at_time = fuel_rate * delta_t
+        fuel_at_time = fuel_rate * delta_t
 
         fuel_at_time.name = "Fuel_at_time_kg"
         return fuel_at_time
