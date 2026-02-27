@@ -112,8 +112,7 @@ def compute_thr_max_climb_ISA(df: pd.DataFrame, type_col: Optional[str] = None) 
     Hp = pd.to_numeric(df.get("altitude"), errors="coerce")
 
     # formula: CTc1*(1-(Hp/CTc2)+CTc3*(Hp**2))
-    with pd.option_context("mode.use_inf_as_na", True):
-        val = ctc["CTc1"] * (1.0 - (Hp / ctc["CTc2"]) + ctc["CTc3"] * (Hp ** 2))
+    val = ctc["CTc1"] * (1.0 - (Hp / ctc["CTc2"]) + ctc["CTc3"] * (Hp ** 2))
 
     # ensure index alignment and return numeric series (NaN where incomplete)
     return pd.Series(val, index=df.index)
