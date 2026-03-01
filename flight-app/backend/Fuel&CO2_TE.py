@@ -242,7 +242,12 @@ def add_Fuel_TE(
     fuel.loc[climb_idx_pos] = fnom.loc[climb_idx_pos]
     fuel.loc[climb_idx_neg] = fmin.loc[climb_idx_neg]
     
-    fuel.loc[mask_cruise] = fcr.loc[mask_cruise]
+    # Cruise: fcr unless thrust <= 0 then fmin
+    cruise_idx_pos = mask_cruise & (thrust.fillna(0) > 0)
+    cruise_idx_neg = mask_cruise & (thrust.fillna(0) <= 0)
+    fuel.loc[cruise_idx_pos] = fcr.loc[cruise_idx_pos]
+    fuel.loc[cruise_idx_neg] = fmin.loc[cruise_idx_neg]
+    
     fuel.loc[mask_descent] = fmin.loc[mask_descent]
     fuel.loc[mask_approach] = fapld.loc[mask_approach]
 
