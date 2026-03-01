@@ -230,14 +230,17 @@ def compute_sumsq_series(
     a_col: str = "a_m/s^2",
     a_min: float = -3.0,
     a_max: float = 3.0,
+    p2_col: str = "P2",
+    p2_min: float = 0.5,
 ) -> pd.Series:
     """Compute Series `Sumsq` = sum(f2^2) for rows where:
     - alt in [alt_min, alt_max]
     - flight_phase == phase_val
-    - a_m/s^2 IN [-3, 3]
+    - a_m/s^2 IN [a_min, a_max]
+    - P2 >= p2_min
 
     The returned Series is aligned with `df` and filled with the scalar sumsq
-    value for every row. If there are no valid f2 values in the altitude/phase/acceleration range
+    value for every row. If there are no valid f2 values meeting all conditions,
     the series contains `pd.NA`.
     """
     try:
@@ -248,6 +251,7 @@ def compute_sumsq_series(
         alt = pd.to_numeric(df.get(alt_col), errors="coerce")
         f2 = pd.to_numeric(df.get(f2_col), errors="coerce")
         a = pd.to_numeric(df.get(a_col), errors="coerce")
+        p2 = pd.to_numeric(df.get(p2_col), errors="coerce")
 
         # build phase mask (only include rows where flight_phase == phase_val)
         phases = df.get(phase_col)
@@ -259,7 +263,10 @@ def compute_sumsq_series(
         # build acceleration mask (only include rows where a_m/s^2 IN [a_min, a_max])
         a_mask = (a >= a_min) & (a <= a_max)
 
-        mask = (alt >= alt_min) & (alt <= alt_max) & phase_mask & a_mask
+        # build P2 mask (only include rows where P2 >= p2_min)
+        p2_mask = (p2 >= p2_min)
+
+        mask = (alt >= alt_min) & (alt <= alt_max) & phase_mask & a_mask & p2_mask
         selected = f2[mask].dropna().astype(float)
 
         if len(selected) == 0:
@@ -280,11 +287,13 @@ def add_sumsq_column(
     a_col: str = "a_m/s^2",
     a_min: float = -3.0,
     a_max: float = 3.0,
+    p2_col: str = "P2",
+    p2_min: float = 0.5,
 ) -> pd.DataFrame:
     """Return DataFrame copy with `Sumsq` column added.
 
     If `f2` is missing it will be computed first.
-    Filters by altitude range, flight phase, and acceleration range.
+    Filters by altitude range, flight phase, acceleration range, and P2 >= p2_min.
     """
     df_out = df.copy()
     try:
@@ -300,6 +309,8 @@ def add_sumsq_column(
             a_col=a_col,
             a_min=a_min,
             a_max=a_max,
+            p2_col=p2_col,
+            p2_min=p2_min,
         )
     except Exception:
         df_out["Sumsq"] = pd.NA
@@ -319,6 +330,8 @@ def optimize_mt0(
     a_col: str = "a_m/s^2",
     a_min: float = -3.0,
     a_max: float = 3.0,
+    p2_col: str = "P2",
+    p2_min: float = 0.5,
     use_scipy: bool = True,
     mt_offset: float = 0.0,
     mt0_lower_bound=None,
@@ -340,6 +353,7 @@ def optimize_mt0(
       * phase == phase_val
       * alt_min <= altitude <= alt_max
       * a_min <= a_m/s^2 <= a_max
+      * P2 >= p2_min
     - Minimize combined objective: weight_aero*Sumsq + weight_target*(mt[0]-target_mt[0])^2
       using scipy.optimize.minimize_scalar if available; otherwise grid search.
     
@@ -349,6 +363,8 @@ def optimize_mt0(
     - weight_target: relative weight for target matching term (default 1.0)
     - a_col: column name for acceleration (default "a_m/s^2")
     - a_min, a_max: acceleration bounds (default -3.0 to 3.0)
+    - p2_col: column name for P2 values (default "P2")
+    - p2_min: minimum P2 threshold for inclusion in Sumsq (default 0.5)
     """
     df_in = df.copy()
     # ensure fuel_at_time exists
@@ -378,7 +394,10 @@ def optimize_mt0(
     else:
         mask_phase = pd.Series([False] * len(df_in), index=df_in.index)
     
-    mask_valid = mask_alt & mask_a & mask_phase
+    p2 = pd.to_numeric(df_in.get(p2_col), errors="coerce")
+    mask_p2 = (p2 >= p2_min)
+    
+    mask_valid = mask_alt & mask_a & mask_phase & mask_p2
     
     if not mask_valid.any():
         # Cannot optimize: no valid rows to minimize over
@@ -432,8 +451,8 @@ def optimize_mt0(
         # compute f2 per row: f2 = P1*mt^2 + P2*mt + P3
         f2_arr = (p1.values * (mt_arr ** 2)) + (p2.values * mt_arr) + p3.values
         
-        # Apply SAME mask as Sumsq: altitude + phase + acceleration
-        sel_mask = mask_alt & mask_phase & mask_a
+        # Apply SAME mask as Sumsq: altitude + phase + acceleration + P2 >= p2_min
+        sel_mask = mask_alt & mask_phase & mask_a & mask_p2
         selected = f2_arr[sel_mask.values]
         # drop NaNs
         selected = selected[~np.isnan(selected)]
@@ -541,6 +560,8 @@ def optimize_mt0(
         a_col=a_col,
         a_min=a_min,
         a_max=a_max,
+        p2_col=p2_col,
+        p2_min=p2_min,
     )
 
     result = {"mt0": mt0_opt, "etow": mt0_opt, "objective": obj_opt}
