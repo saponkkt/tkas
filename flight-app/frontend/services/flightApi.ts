@@ -3,7 +3,7 @@
  * All data comes from SQL-backed APIs; CSV download streams the pipeline output.
  */
 
-const BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+const BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:6908';
 
 export type AircraftType = 'airbus' | 'boeing';
 
@@ -40,6 +40,45 @@ export interface FlightAnalysisResult {
   segments: FlightSegmentRow[];
   total_fuel_kg: number | null;
   trip_fuel_kg: number | null;
+}
+
+/** POST /upload: upload CSV + aircraft_type, returns processed data directly */
+export async function uploadFlightCsv(
+  file: File,
+  aircraftType: AircraftType | string
+): Promise<{ 
+  summary: {
+    aircraft_type: string;
+    etow_kg: number | null;
+    total_fuel_kg: number | null;
+    trip_fuel_kg: number | null;
+    total_co2_kg: number | null;
+  };
+  track: Array<{
+    latitude: number;
+    longitude: number;
+    timestamp: string;
+    altitude?: number;
+    speed?: number;
+    flight_phase?: string;
+  }>;
+  output_file: string;
+}> {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('aircraft_type', aircraftType === 'airbus' ? 'A320' : (aircraftType === 'boeing' ? '737' : aircraftType));
+  
+  const response = await fetch(`${BASE_URL}/upload`, {
+    method: 'POST',
+    body: formData,
+  });
+  
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Upload failed: ${response.status}`);
+  }
+  
+  return response.json();
 }
 
 /** POST /calculate: upload CSV + aircraft_type, returns run_id */
