@@ -3,8 +3,8 @@
     "distance_nm": 308,
     "distance_km": 570,
     "time_enroute": "01:13:15",
-    "fuel_kg": 2414.49,
-    "co2_kg": 7603.22,
+    "fuel_kg": 2421,
+    "co2_kg": 7650.36,
     "mass_kg": 67118.41
   },
   "track": [
@@ -29,37 +29,51 @@
       "duration": "00:08:00",
       "distance_km": 0,
       "flight_level": "0",
-      "fuel_kg": 100.0
+      "fuel_kg": 100
+    },
+    {
+      "phase": "take-off",
+      "duration": "00:01:00",
+      "distance_km": 1,
+      "flight_level": "0",
+      "fuel_kg": 200
     },
     {
       "phase": "climb",
       "duration": "00:06:00",
       "distance_km": 44.5,
       "flight_level": "200",
-      "fuel_kg": 650.0
+      "fuel_kg": 450
     },
     {
       "phase": "cruise",
       "duration": "00:39:00",
       "distance_km": 400.0,
       "flight_level": "200",
-      "fuel_kg": 1291.0
+      "fuel_kg": 1291
     },
     {
       "phase": "descent",
       "duration": "00:18:00",
       "distance_km": 122.5,
       "flight_level": "0",
-      "fuel_kg": 280.09
+      "fuel_kg": 200
+    },
+    {
+      "phase": "landing",
+      "duration": "00:02:00",
+      "distance_km": 44.5,
+      "flight_level": "0",
+      "fuel_kg": 80
     },
     {
       "phase": "taxi",
       "duration": "00:05:15",
-      "distance_km": 0,
-      "fuel_kg": 100.0
+      "distance_km": 1,
+      "flight_level": "0",
+      "fuel_kg": 50
     }
   ],
-  "flight_fuel_kg": 2414.49,
-  "block_fuel_kg": 5386.55
+  "flight_fuel_kg": 2421
 }
 

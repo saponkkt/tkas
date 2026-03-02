@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, Polyline, Marker, Popup, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Polyline, Marker, Popup, Tooltip, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { FlightTrackPoint } from '@/services/flightApi';
@@ -69,12 +69,12 @@ export default function FlightMap({ track }: FlightMapProps) {
   const endPoint = track[track.length - 1];
 
   return (
-    <div className="bg-white rounded-lg shadow-md border border-gray-200 overflow-hidden">
+    <div className="bg-white rounded-lg shadow-md border border-gray-200 overflow-hidden flex flex-col h-full">
       <div className="px-6 py-4 border-b border-gray-200 bg-gray-50">
         <h2 className="text-xl font-semibold text-gray-900">Flight Track</h2>
         <p className="text-sm text-gray-600 mt-1">Interactive map with ADS-B track visualization</p>
       </div>
-      <div className="h-96 w-full relative">
+      <div className="flex-1 w-full relative min-h-96">
         <MapContainer
           center={[track[Math.floor(track.length / 2)].lat, track[Math.floor(track.length / 2)].lon]}
           zoom={6}
@@ -100,6 +100,37 @@ export default function FlightMap({ track }: FlightMapProps) {
               },
             }}
           />
+          {track.map((point, idx) => {
+            if (idx === 0) return null;
+            const prev = track[idx - 1];
+            return (
+              <Polyline
+                key={`segment-${idx}`}
+                positions={[[prev.lat, prev.lon], [point.lat, point.lon]]}
+                pathOptions={{ color: 'transparent', weight: 14, opacity: 0 }}
+              >
+                <Tooltip direction="top" offset={[0, -10]} opacity={1} permanent={false}>
+                  <div className="text-xs">
+                    <strong>Lat:</strong> {point.lat.toFixed(4)} | <strong>Lon:</strong> {point.lon.toFixed(4)}
+                    <br />
+                    <strong>Time:</strong> {new Date(point.timestamp).toISOString().replace('T', ' ').slice(0, 19)} UTC
+                    {point.altitude != null && !Number.isNaN(point.altitude) && (
+                      <>
+                        <br />
+                        <strong>Alt:</strong> {point.altitude.toFixed(0)} m
+                      </>
+                    )}
+                    {point.speed != null && !Number.isNaN(point.speed) && (
+                      <>
+                        <br />
+                        <strong>Speed:</strong> {point.speed.toFixed(0)} kt
+                      </>
+                    )}
+                  </div>
+                </Tooltip>
+              </Polyline>
+            );
+          })}
           <Marker position={[startPoint.lat, startPoint.lon]} icon={startIcon}>
             <Popup>
               <div className="text-sm">

@@ -46,7 +46,22 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 API จะอยู่ที่ `http://localhost:8000`
 
-### API Spec – POST `/upload`
+### Pipeline API (ADS-B + SQLite) – สำหรับ Frontend prototype
+Frontend ใหม่ใช้ **Pipeline API** ที่รัน `process_adsb_pipeline.py` และเก็บผลใน SQLite:
+
+```bash
+cd flight-app/backend
+source venv/Scripts/activate   # หรือ venv\Scripts\activate บน Windows
+uvicorn api.app:app --reload --host 0.0.0.0 --port 8000
+```
+
+- **POST /calculate** – อัปโหลด CSV + `aircraft_type` → รัน pipeline → คืนค่า `run_id`
+- **GET /summary/{run_id}**, **/track/{run_id}**, **/segments/{run_id}** – ดึงผลจาก SQLite
+- **GET /download/csv/{run_id}** – ดาวน์โหลดไฟล์ output CSV จาก pipeline
+
+Database: `backend/flights.db` (SQLite)
+
+### API Spec – POST `/upload` (simple calculator)
 
 - **URL**: `/upload`
 - **Method**: `POST`

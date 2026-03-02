@@ -6,9 +6,17 @@ import SummaryCards from '@/components/SummaryCards';
 import SegmentTable from '@/components/SegmentTable';
 import DownloadPanel from '@/components/DownloadPanel';
 import LoadingOverlay from '@/components/LoadingOverlay';
-import { submitFlightCsv, AircraftType, FlightAnalysisResult } from '@/services/flightApi';
+import DataIntegrityCard, { ValidationResult } from '@/components/DataIntegrityCard';
+import {
+  submitFlightCsv,
+  fetchSummary,
+  fetchTrack,
+  fetchSegments,
+  trackPointsToMapFormat,
+  AircraftType,
+  FlightAnalysisResult,
+} from '@/services/flightApi';
 
-// Dynamically import FlightMap to avoid SSR issues with Leaflet
 const FlightMap = dynamic(() => import('@/components/FlightMap'), {
   ssr: false,
   loading: () => (
@@ -35,12 +43,29 @@ export default function Home() {
     }
 
     setIsLoading(true);
+    setResult(null);
     try {
-      const analysisResult = await submitFlightCsv(selectedFile, selectedAircraft);
-      setResult(analysisResult);
+      const { run_id } = await submitFlightCsv(selectedFile, selectedAircraft);
+
+      const [summary, trackRes, segmentsRes] = await Promise.all([
+        fetchSummary(run_id),
+        fetchTrack(run_id),
+        fetchSegments(run_id),
+      ]);
+
+      const track = trackPointsToMapFormat(trackRes.points);
+
+      setResult({
+        run_id,
+        summary,
+        track,
+        segments: segmentsRes.segments,
+        total_fuel_kg: summary.total_fuel_kg,
+        trip_fuel_kg: summary.trip_fuel_kg,
+      });
     } catch (error) {
       console.error('Error processing flight data:', error);
-      alert('Error processing flight data. Please try again.');
+      alert(error instanceof Error ? error.message : 'Error processing flight data. Please try again.');
     } finally {
       setIsLoading(false);
     }
@@ -52,9 +77,21 @@ export default function Home() {
     setResult(null);
   };
 
+  const validationResult: ValidationResult = result
+    ? {
+        overallStatus: 'complete',
+        checks: [
+          {
+            key: 'pipeline',
+            status: 'ok',
+            message: 'Processed by ADS-B pipeline; results stored in database.',
+          },
+        ],
+      }
+    : { overallStatus: 'complete', checks: [] };
+
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header */}
       <header className="bg-white shadow-sm border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <h1 className="text-3xl font-bold text-gray-900">Flight Analysis Tool</h1>
@@ -64,21 +101,17 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {!result ? (
-          // Input Section
           <div className="space-y-6">
             <UploadPanel
               onFileSelect={setSelectedFile}
               selectedFile={selectedFile}
             />
-
             <AircraftSelector
               selectedType={selectedAircraft}
               onSelect={setSelectedAircraft}
             />
-
             <div className="flex justify-end">
               <button
                 onClick={handleCalculate}
@@ -90,9 +123,7 @@ export default function Home() {
             </div>
           </div>
         ) : (
-          // Results Section
           <div className="space-y-6">
-            {/* Reset Button */}
             <div className="flex justify-end">
               <button
                 onClick={handleReset}
@@ -102,7 +133,6 @@ export default function Home() {
               </button>
             </div>
 
-            {/* Summary Cards */}
             <div>
               <h2 className="text-2xl font-semibold text-gray-900 mb-4">
                 Flight Summary
@@ -110,29 +140,28 @@ export default function Home() {
               <SummaryCards summary={result.summary} />
             </div>
 
-            {/* Map and Segments */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
+              <div className="flex flex-col">
                 <FlightMap track={result.track} />
               </div>
-              <div>
+              <div className="flex flex-col">
                 <SegmentTable
                   segments={result.segments}
-                  flightFuel={result.flight_fuel_kg}
-                  blockFuel={result.block_fuel_kg}
+                  totalFuelKg={result.summary.total_fuel_kg}
                 />
               </div>
             </div>
 
-            {/* Export Panel */}
-            <DownloadPanel result={result} />
+            <div className="w-full">
+              <DataIntegrityCard validationResult={validationResult} />
+            </div>
+
+            <DownloadPanel runId={result.run_id} />
           </div>
         )}
       </main>
 
-      {/* Loading Overlay */}
       {isLoading && <LoadingOverlay />}
     </div>
   );
 }
-

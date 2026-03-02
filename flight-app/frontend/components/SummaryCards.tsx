@@ -5,48 +5,42 @@ interface SummaryCardsProps {
   summary: FlightSummary;
 }
 
+function fmt(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return '—';
+  return v.toLocaleString('en-US', { maximumFractionDigits: 2 });
+}
+
 export default function SummaryCards({ summary }: SummaryCardsProps) {
   const cards = [
     {
-      title: 'Total Distance',
-      value: `${summary.distance_nm.toLocaleString('en-US', {
-        maximumFractionDigits: 2,
-      })} NM`,
-      subvalue: `(${summary.distance_km.toLocaleString('en-US', {
-        maximumFractionDigits: 2,
-      })} km)`,
+      title: 'ETOW',
+      value: `${fmt(summary.etow_kg)} kg`,
+      subvalue: 'Estimated take-off weight',
     },
     {
-      title: 'Time En-Route',
-      value: summary.time_enroute,
-      subvalue: 'HH:MM:SS',
+      title: 'Total Fuel',
+      value: `${fmt(summary.total_fuel_kg)} kg`,
+      subvalue: summary.total_fuel_kg != null ? `${(summary.total_fuel_kg / 1000).toFixed(2)} tonnes` : '—',
     },
     {
-      title: 'Fuel Consumption',
-      value: `${summary.fuel_kg.toLocaleString('en-US', {
-        maximumFractionDigits: 2,
-      })} kg`,
-      subvalue: `${(summary.fuel_kg / 1000).toLocaleString('en-US', {
-        maximumFractionDigits: 2,
-      })} tonnes`,
+      title: 'Trip Fuel',
+      value: `${fmt(summary.trip_fuel_kg)} kg`,
+      subvalue: 'Takeoff → landing',
     },
     {
-      title: 'CO₂ Emissions',
-      value: `${summary.co2_kg.toLocaleString('en-US', {
-        maximumFractionDigits: 2,
-      })} kg`,
-      subvalue: `${(summary.co2_kg / 1000).toLocaleString('en-US', {
-        maximumFractionDigits: 2,
-      })} tonnes`,
+      title: 'Total CO₂',
+      value: `${fmt(summary.total_co2_kg)} kg`,
+      subvalue: summary.total_co2_kg != null ? `${(summary.total_co2_kg / 1000).toFixed(2)} tonnes` : '—',
     },
     {
-      title: 'Mass Estimate',
-      value: `${summary.mass_kg.toLocaleString('en-US', {
-        maximumFractionDigits: 2,
-      })} kg`,
-      subvalue: `${(summary.mass_kg / 1000).toLocaleString('en-US', {
-        maximumFractionDigits: 2,
-      })} tonnes`,
+      title: 'Aircraft Type',
+      value: summary.aircraft_type || '—',
+      subvalue: `Run: ${summary.run_id.slice(0, 8)}…`,
+    },
+    {
+      title: 'Created (UTC)',
+      value: summary.created_at ? new Date(summary.created_at).toLocaleString() : '—',
+      subvalue: '',
     },
   ];
 
@@ -67,7 +61,9 @@ export default function SummaryCards({ summary }: SummaryCardsProps) {
               <div className="text-2xl font-bold text-gray-900">
                 {card.value}
               </div>
-              <div className="text-xs text-gray-500 mt-1">{card.subvalue}</div>
+              {card.subvalue && (
+                <div className="text-xs text-gray-500 mt-1">{card.subvalue}</div>
+              )}
             </div>
           </div>
         </div>
@@ -75,4 +71,3 @@ export default function SummaryCards({ summary }: SummaryCardsProps) {
     </div>
   );
 }
-
