@@ -8,10 +8,7 @@ import DownloadPanel from '@/components/DownloadPanel';
 import LoadingOverlay from '@/components/LoadingOverlay';
 import DataIntegrityCard, { ValidationResult } from '@/components/DataIntegrityCard';
 import {
-  submitFlightCsv,
-  fetchSummary,
-  fetchTrack,
-  fetchSegments,
+  uploadFlightCsv,
   trackPointsToMapFormat,
   AircraftType,
   FlightAnalysisResult,
@@ -31,6 +28,7 @@ export default function Home() {
   const [selectedAircraft, setSelectedAircraft] = useState<AircraftType | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<FlightAnalysisResult | null>(null);
+  const [outputFile, setOutputFile] = useState<string | null>(null);
 
   const handleCalculate = async () => {
     if (!selectedFile) {
@@ -45,24 +43,35 @@ export default function Home() {
     setIsLoading(true);
     setResult(null);
     try {
-      const { run_id } = await submitFlightCsv(selectedFile, selectedAircraft);
+      const uploadResponse = await uploadFlightCsv(selectedFile, selectedAircraft);
 
-      const [summary, trackRes, segmentsRes] = await Promise.all([
-        fetchSummary(run_id),
-        fetchTrack(run_id),
-        fetchSegments(run_id),
-      ]);
-
-      const track = trackPointsToMapFormat(trackRes.points);
-
-      setResult({
-        run_id,
-        summary,
+      const track = trackPointsToMapFormat(uploadResponse.track);
+      
+      // Create a FlightAnalysisResult from the upload response
+      const analysisResult: FlightAnalysisResult = {
+        run_id: 'local-' + Date.now(),
+        summary: {
+          run_id: 'local-' + Date.now(),
+          aircraft_type: uploadResponse.summary.aircraft_type,
+          created_at: new Date().toISOString(),
+          etow_kg: uploadResponse.summary.etow_kg,
+          total_fuel_kg: uploadResponse.summary.total_fuel_kg,
+          trip_fuel_kg: uploadResponse.summary.trip_fuel_kg,
+          total_co2_kg: uploadResponse.summary.total_co2_kg,
+        },
         track,
-        segments: segmentsRes.segments,
-        total_fuel_kg: summary.total_fuel_kg,
-        trip_fuel_kg: summary.trip_fuel_kg,
-      });
+        segments: track.map((point, idx) => ({
+          timestamp: point.timestamp,
+          delta_t_s: null,
+          fuel_kg: null,
+          co2_kg: null,
+        })),
+        total_fuel_kg: uploadResponse.summary.total_fuel_kg,
+        trip_fuel_kg: uploadResponse.summary.trip_fuel_kg,
+      };
+
+      setResult(analysisResult);
+      setOutputFile(uploadResponse.output_file);
     } catch (error) {
       console.error('Error processing flight data:', error);
       alert(error instanceof Error ? error.message : 'Error processing flight data. Please try again.');
@@ -75,6 +84,7 @@ export default function Home() {
     setSelectedFile(null);
     setSelectedAircraft(null);
     setResult(null);
+    setOutputFile(null);
   };
 
   const validationResult: ValidationResult = result
@@ -156,7 +166,7 @@ export default function Home() {
               <DataIntegrityCard validationResult={validationResult} />
             </div>
 
-            <DownloadPanel runId={result.run_id} />
+            <DownloadPanel outputFile={outputFile} />
           </div>
         )}
       </main>
