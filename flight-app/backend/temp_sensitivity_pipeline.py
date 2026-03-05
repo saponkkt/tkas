@@ -1,19 +1,29 @@
-"""Small pipeline to process ADS-B CSV using project modules.
+"""Temperature Sensitivity Pipeline
+
+This pipeline processes ADS-B CSV with customized Temperature_K values to analyze
+temperature sensitivity impacts on TAS calculations.
 
 Usage:
-    python process_adsb_pipeline.py input.csv output.csv
+    python temp_sensitivity_pipeline.py input_folder output_folder sensitivity_value aircraft_type
 
-The script will attempt to run the following steps in order:
- - basic validation via `TAS_Temp._ensure_required_columns`
- - add `flight_phase` via `flight_phase.detect_flight_phase`
- - add time + delta columns via `variable_mass.add_utc_split_columns`
- - compute thrust via `thrust.compute_thrust_N`
- - compute fuel columns via `Fuel.add_fuel_column` and related helpers
+Example:
+    python temp_sensitivity_pipeline.py ./input ./output 5 737
 
-Helper scripts:
- - `add_aircraft_type.py`: CLI helper to add an `aircraft_type` column to CSV files (file or directory).
+Parameters:
+    input_folder: Path to folder containing input CSV files
+    output_folder: Path to folder for output CSV files  
+    sensitivity_value: Temperature sensitivity in Kelvin (int/float)
+                      - Sets first N rows to (273.15 + sensitivity_value) K
+                      - For remaining rows: T0 - (0.0065 * altitude_m)
+                      Where T0 = 273.15 + sensitivity_value
+    aircraft_type: Aircraft type code (e.g., '737', 'A320')
 
-The script is defensive: it will continue when optional inputs are missing.
+The script processes temperature sensitivity by:
+1. Loading CSV files from input_folder
+2. Computing TAS with normal ERA5 temperature
+3. Overriding Temperature_K with custom sensitivity values
+4. Running downstream calculations (Mass, Thrust, Fuel)
+5. Writing results to output_folder
 """
 
 from __future__ import annotations
@@ -23,13 +33,14 @@ from typing import Optional
 import os
 import glob
 from pathlib import Path
+import time
 
 import pandas as pd
 import numpy as np
-import time
 
 from multi_tas import compute_tas_for_dataframe
 import sys
+
 # Clear any cached imports to ensure latest code is used
 if 'flight_phase' in sys.modules:
     del sys.modules['flight_phase']
@@ -39,21 +50,10 @@ if 'thrust' in sys.modules:
     del sys.modules['thrust']
 if 'Fuel' in sys.modules:
     del sys.modules['Fuel']
-if 'Mass' in sys.modules:
-    del sys.modules['Mass']
+if 'Mass_sent' in sys.modules:
+    del sys.modules['Mass_sent']
 
 from flight_phase import detect_flight_phase
-
-# Verify we're using the correct flight_phase module
-import flight_phase as fp_module
-print(f"flight_phase module file: {fp_module.__file__}")
-import inspect
-source_lines = inspect.getsource(fp_module.detect_flight_phase)
-if "rocd_val_case3" in source_lines:
-    print("OK: Using FIXED flight_phase.py (has rocd_val_case3 post-processing)")
-else:
-    print("WARNING: Using OLD flight_phase.py (missing rocd_val_case3 post-processing)")
-
 import variable_mass
 import thrust as thrust_mod
 import Fuel as fuel_mod
@@ -61,36 +61,95 @@ import Mass as mass_mod
 import importlib.util
 
 
-print("Script loaded")
+def apply_temperature_sensitivity(
+    df: pd.DataFrame, 
+    sensitivity_value: float,
+    num_rows_override: Optional[int] = None
+) -> pd.DataFrame:
+    """Apply temperature sensitivity modification to DataFrame.
+    
+    For the first N rows (where N = sensitivity_value or num_rows_override):
+        Temperature_K = 273.15 + sensitivity_value
+    
+    For remaining rows, apply lapse rate:
+        Temperature_K = T0 - (0.0065 * altitude_m)
+        Where T0 = 273.15 + sensitivity_value
+    
+    Args:
+        df: DataFrame with 'altitude' and 'Temperature_K' columns
+        sensitivity_value: Temperature offset in Kelvin
+        num_rows_override: Override number of rows to apply constant temperature (default: use sensitivity_value)
+    
+    Returns:
+        DataFrame with modified Temperature_K column
+    """
+    df = df.copy()
+    
+    # Base temperature: 273.15 K (0°C) + sensitivity value
+    T0 = 273.15 + sensitivity_value
+    
+    # Number of rows to apply constant temperature (only first row)
+    if num_rows_override is not None:
+        n_rows = num_rows_override
+    else:
+        n_rows = 1  # Only the first row uses constant temperature
+    
+    # Ensure we have altitude column
+    if 'altitude' not in df.columns:
+        print("Warning: 'altitude' column not found, using raw sensitivity value for all rows")
+        df['Temperature_K'] = T0
+        return df
+    
+    # Convert altitude to numeric (feet)
+    alt_ft = pd.to_numeric(df['altitude'], errors='coerce').fillna(0.0)
+    
+    # Convert feet to meters: multiply by 0.3048
+    alt_m = alt_ft * 0.3048
+    
+    # Lapse rate: 0.0065 K/m
+    L_lapse = 0.0065
+    
+    # Initialize Temperature_K column
+    temp_k = np.zeros(len(df))
+    
+    # First N rows: constant temperature T0
+    temp_k[:n_rows] = T0
+    
+    # Remaining rows: apply lapse rate formula
+    # Temperature_K = T0 - (L_lapse * altitude_m)
+    if len(df) > n_rows:
+        temp_k[n_rows:] = T0 - (L_lapse * alt_m[n_rows:])
+    
+    df['Temperature_K'] = temp_k
+    
+    print(f"Applied temperature sensitivity: T0={T0:.2f}K, "
+          f"constant for first {n_rows} rows, "
+          f"then lapse rate {L_lapse} K/m for remaining {len(df)-n_rows} rows")
+    
+    return df
 
-def _process_file(input_path: str, output_path: str, compute_tas: bool = True, aircraft_type: Optional[str] = None) -> None:
-    """Process a single CSV file and write output CSV."""
+
+def _process_file(
+    input_path: str, 
+    output_path: str, 
+    compute_tas: bool = False, 
+    aircraft_type: Optional[str] = None, 
+    sensitivity_value: Optional[float] = None
+) -> None:
+    """Process a single CSV file with temperature sensitivity.
+    
+    Args:
+        input_path: Path to input CSV file
+        output_path: Path to output CSV file
+        compute_tas: Whether to compute TAS from wind data
+        aircraft_type: Aircraft type for computations
+        sensitivity_value: Temperature sensitivity value in Kelvin
+    """
     df = pd.read_csv(input_path)
-
-    # Remove any empty columns (Unnamed columns from Excel exports)
-    df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
-    if len(df.columns) < len(pd.read_csv(input_path).columns):
-        print(f"Removed {len(pd.read_csv(input_path).columns) - len(df.columns)} empty columns")
-
-    # Parse Position into latitude and longitude if present
-    if 'Position' in df.columns:
-        try:
-            df[['latitude', 'longitude']] = df['Position'].str.split(',', expand=True).astype(float)
-            print("Parsed Position into latitude and longitude")
-        except Exception as e:
-            print(f"Warning: could not parse Position: {e}")
-
-    # Normalize column names
-    rename_dict = {}
-    if 'Altitude' in df.columns and 'altitude' not in df.columns:
-        rename_dict['Altitude'] = 'altitude'
-    if 'Speed' in df.columns and 'TAS_kt' not in df.columns:
-        rename_dict['Speed'] = 'TAS_kt'
-    if 'Direction' in df.columns and 'track' not in df.columns:
-        rename_dict['Direction'] = 'track'
-    df.rename(columns=rename_dict, inplace=True)
-    if rename_dict:
-        print(f"Renamed columns: {rename_dict}")
+    
+    print(f"\n{'='*80}")
+    print(f"Processing: {input_path}")
+    print(f"{'='*80}")
 
     # Basic case-insensitive normalization for commonly used column names
     existing = {c.lower(): c for c in df.columns}
@@ -101,26 +160,17 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
             df["altitude"] = df[existing["alt"]]
         elif "altitude_ft" in existing:
             df["altitude"] = df[existing["altitude_ft"]]
-    # If Position is provided as a single column like 'Position' or 'position',
-    # leave parsing to downstream modules; ensure lowercase latitude/longitude
-    # are not overwritten here.
 
-    # If user provided an aircraft type, set it on every row so downstream
-    # functions that expect an `aircraft_type` column will pick it up.
+    # If user provided an aircraft type, set it on every row
     if aircraft_type is not None:
-        # Always set/overwrite to ensure downstream modules receive the type.
         df["aircraft_type"] = str(aircraft_type)
         print(f"Applied aircraft_type='{aircraft_type}' to all rows")
 
-    # 1. Basic normalization is handled inside compute_tas_for_dataframe when needed
-
-    # Ensure we have a UTC column for variable_mass (if timestamp exists, copy it)
+    # Ensure we have a UTC column for variable_mass
     if "UTC" not in df.columns and "timestamp" in df.columns:
         df["UTC"] = df["timestamp"].astype(str)
 
-    # 2. Optionally compute TAS using model winds (GFS / ERA5).
-    # Run this before flight phase detection so that altitude/lat/lon
-    # normalization is available to `detect_flight_phase`.
+    # Compute TAS using model winds (GFS / ERA5)
     if compute_tas:
         try:
             t0 = time.time()
@@ -129,7 +179,6 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
             print(f"Timing: compute_tas_for_dataframe took {t1-t0:.2f}s")
             if len(df_new) == 0:
                 print("Warning: compute_tas returned empty DataFrame, skipping TAS computation")
-                # continue without TAS
             else:
                 df = df_new
                 print("Computed TAS and wind columns from model data")
@@ -138,43 +187,46 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
             print("Skipping this file because TAS/wind data are required for downstream calculations.")
             return
 
-    # 3. Ensure UTC column exists for downstream modules (variable_mass expects 'UTC')
+    # ===== TEMPERATURE SENSITIVITY MODIFICATION =====
+    # Apply custom temperature sensitivity instead of using ERA5 temperatures
+    if sensitivity_value is not None:
+        try:
+            df = apply_temperature_sensitivity(df, sensitivity_value)
+        except Exception as e:
+            print(f"Error applying temperature sensitivity: {e}")
+            print("Continuing with original Temperature_K values")
+    # ===== END TEMPERATURE SENSITIVITY =====
+
+    # Ensure UTC column exists for downstream modules
     if "UTC" not in df.columns:
         if "utc_time" in df.columns:
             utc_val = df["utc_time"]
-            # If `utc_time` is a DataFrame (multiple columns), coalesce to a single Series
             if isinstance(utc_val, pd.DataFrame):
                 try:
-                    # take first non-null value across columns for each row
                     utc_series = utc_val.apply(lambda row: next((x for x in row if pd.notnull(x)), None), axis=1)
                 except Exception:
-                    # fallback: take the first column
                     utc_series = utc_val.iloc[:, 0]
             else:
                 utc_series = utc_val
 
-            # Try to parse to datetime ISO; fallback to string when parsing fails
             try:
                 df["UTC"] = pd.to_datetime(utc_series, errors="coerce", utc=True).dt.strftime("%Y-%m-%dT%H:%M:%SZ").fillna("")
             except Exception:
                 df["UTC"] = utc_series.astype(str).fillna("")
         else:
-            # if we have epoch seconds in `time`, format to ISO
             try:
                 df["UTC"] = pd.to_datetime(df["time"], unit="s", utc=True).dt.strftime("%Y-%m-%dT%H:%M:%SZ")
             except Exception:
                 df["UTC"] = ""
 
-    # 3. Detect flight phases
+    # Detect flight phases
     try:
-        # Ensure ROCD_m/s exists: compute from UTC + altitude when missing
         try:
             if "ROCD_m/s" not in df.columns:
                 if "UTC" in df.columns and "altitude" in df.columns:
                     dt = pd.to_datetime(df["UTC"], errors="coerce")
                     dt_s = dt.diff().dt.total_seconds().fillna(1.0)
                     alt = pd.to_numeric(df["altitude"], errors="coerce")
-                    # Heuristic: if alt values are large, assume feet and convert to meters
                     try:
                         max_alt = float(alt.max(skipna=True))
                     except Exception:
@@ -184,13 +236,9 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
                     else:
                         alt_m = alt
                     rocd_ms = alt_m.diff().fillna(0) / dt_s.replace(0, 1.0)
-                    # Clean floating-point noise: round to 1 decimal place
-                    # This converts values like 3.3e-12 to 0.0
                     rocd_ms_clean = np.round(rocd_ms.fillna(0), decimals=1)
                     df["ROCD_m/s"] = rocd_ms_clean
                     print("Computed ROCD_m/s from UTC and altitude")
-                else:
-                    print("ROCD_m/s missing and UTC/altitude not available; skipping ROCD computation")
         except Exception as _e:
             print(f"Warning: could not compute ROCD_m/s: {_e}")
 
@@ -199,18 +247,10 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
         t1 = time.time()
         print(f"Timing: detect_flight_phase took {t1-t0:.2f}s")
         print("Added column: flight_phase")
-        # Debug: Check red rows right after detect_flight_phase
-        try:
-            red_check = df.iloc[2043-1:2072]
-            print(f"DEBUG: Red rows after detect_flight_phase: Cruise={( red_check['flight_phase'] == 'Cruise').sum()}/30")
-        except:
-            pass
-        # Post-processing disabled: detect_flight_phase() now includes Cases 2-4 handling
-        # that properly handles Climb at cruise altitude and plateau detection
     except Exception as e:
         print(f"Warning: detect_flight_phase failed: {e}")
 
-    # 3. Add UTC split columns (delta_t, sum_t, etc.)
+    # Add UTC split columns (delta_t, sum_t, etc.)
     try:
         t0 = time.time()
         df = variable_mass.add_utc_split_columns(df, utc_col="UTC")
@@ -220,7 +260,7 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
     except Exception as e:
         print(f"Warning: add_utc_split_columns failed: {e}")
 
-    # 4. Compute thrust (will try to detect phase if missing)
+    # Compute thrust (will try to detect phase if missing)
     try:
         t0 = time.time()
         thrust_series = thrust_mod.compute_thrust_N(df, type_col="aircraft_type")
@@ -231,7 +271,7 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
     except Exception as e:
         print(f"Warning: compute_thrust_N failed: {e}")
 
-    # 5. Compute fuel columns
+    # Compute fuel columns
     try:
         t0_fuel = time.time()
         # ensure intermediate fuel columns (use aircraft_type column from pipeline)
@@ -246,33 +286,8 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
         t1_fuel = time.time()
         print(f"Timing: fuel helpers took {t1_fuel-t0_fuel:.2f}s")
         print("Computed fuel columns and cumulative fuel")
-        # Diagnostics: print presence/counts of key fuel-related columns for debugging
-        key_cols = [
-            "Thrust_N",
-            "eta_kg_per_min_per_kN",
-            "fnom_kg_per_s",
-            "fmin_kg_per_s",
-            "fcr_kg_per_s",
-            "fapld_kg_per_s",
-            "Fuel_kg_per_s",
-            "Fuel_at_time_kg",
-            "Fuel_sum_with_time_kg",
-        ]
-        present = [c for c in key_cols if c in df.columns]
-        if present:
-            counts = {c: int(df[c].notna().sum()) for c in present}
-            print("Fuel diagnostics - non-null counts:", counts)
-            try:
-                print(df[present].head(5).to_string(index=False))
-            except Exception:
-                pass
     except Exception as e:
-        import traceback
-
-        print("Warning: fuel computation failed:")
-        traceback.print_exc()
-    
-    
+        print(f"Warning: fuel computation failed: {e}")
 
     # Create alias column names expected elsewhere (add _TE suffixes and safe names)
     try:
@@ -291,7 +306,8 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
                 print(f"Aliased column: {src} -> {dst}")
     except Exception as e:
         print(f"Warning: aliasing Fuel&CO2_TE columns failed: {e}")
-    # 6. Compute mass-related columns from Mass.py (P1,P2,P3,mt,f2,Sumsq)
+
+    # Compute mass-related columns from Mass.py (P1,P2,P3,mt,f2,Sumsq)
     try:
         df = mass_mod.add_P1_column(df)
         df = mass_mod.add_P2_column(df)
@@ -300,25 +316,11 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
         df = mass_mod.add_mt_column(df, mt_offset=57796.0)
         df = mass_mod.add_f2_column(df)
         df = mass_mod.add_sumsq_column(df)
-
         print("Computed mass-related columns: P1, P2, P3, mt, f2, Sumsq (initial)")
-        mass_cols = ["P1", "P2", "P3", "mt", "f2", "Sumsq"]
-        present = [c for c in mass_cols if c in df.columns]
-        if present:
-            counts = {c: int(df[c].notna().sum()) for c in present}
-            print("Mass diagnostics - non-null counts:", counts)
-            try:
-                print(df[present].head(5).to_string(index=False))
-            except Exception:
-                pass
     except Exception as e:
-        import traceback
+        print(f"Warning: mass computation failed: {e}")
 
-        print("Warning: mass computation failed:")
-        traceback.print_exc()
-
-    # 6.5 Optional: optimize mt0 to minimize Sumsq
-    # Try to use optimizer to find mt value that minimizes aerodynamic objective
+    # Optional: optimize mt0 to minimize Sumsq
     try:
         print(f"Running optimize_mt0 without target (using only aerodynamic objective)...")
         target_mt = None
@@ -347,10 +349,8 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
             print(f"Optimization skipped: {result.get('skipped', 'unknown reason')}")
     except Exception as e:
         print(f"Warning: optimize_mt0 failed: {e}")
-        import traceback
-        traceback.print_exc()
 
-    # 6.x Compute Total_Energy columns if available (CL, CD, D, Thrust_N_TE)
+    # Compute Total_Energy columns if available (CL, CD, D, Thrust_N_TE)
     try:
         from Total_Energy import add_CL, add_CD, add_D, add_Thrust_N_TE
 
@@ -377,14 +377,10 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
             if "ROCD_m/s" not in df.columns:
                 if "altitude" in df.columns and "delta_t (s)" in df.columns:
                     # ROCD_m/s = delta altitude (m) / delta_t (s)
-                    # altitude may be in meters already; diff gives meters if so
                     dt = df["delta_t (s)"].astype(float).replace({0: np.nan})
-                    # compute altitude diff; if altitude is in feet convert elsewhere — assume meters here
                     rocd_ms = df["altitude"].astype(float).diff().fillna(0) / dt.ffill().fillna(1)
                     df["ROCD_m/s"] = rocd_ms.fillna(0)
                     print("Computed ROCD_m/s from altitude and delta_t (s)")
-                else:
-                    print("ROCD_m/s column missing and altitude/delta_t not available; skipping ROCD_m/s computation")
 
             df = add_Thrust_N_TE(df)
             print("Added column: Thrust_N_TE")
@@ -458,7 +454,6 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
                     print("Added column: CO2_sum_with_time")
                 except Exception as e:
                     print(f"Warning: add_CO2_sum_with_time_TE failed: {e}")
-                # (aliasing removed) do not create TE-suffixed alias columns here
             else:
                 print("Fuel&CO2_TE module not available; skipping Fuel/CO2 TE columns")
         except Exception as e:
@@ -467,12 +462,11 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
     except Exception:
         print("Warning: Total_Energy module not found; skipping TE columns")
 
-    # 6. Save
     # Ensure `aircraft_type` column exists in the output (may be provided interactively)
     if "aircraft_type" not in df.columns:
         # If user supplied aircraft_type earlier, use it; otherwise create empty column
         df["aircraft_type"] = aircraft_type if aircraft_type is not None else ""
-        print(f"Ensured aircraft_type column in output (set to '{df['aircraft_type'].iloc[0]}' for rows)")
+        print(f"Ensured aircraft_type column in output")
 
     # Ensure `flight_phase` exists in output (fallback to avoid missing column)
     if 'flight_phase' not in df.columns:
@@ -489,12 +483,16 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
         df = df[cols]
         print(f"Reordered columns: flight_phase moved to position {insert_pos}")
 
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(output_path, index=False)
-    print(f"Saved output to: {output_path}")
-    print(f"flight_phase column stats: {df['flight_phase'].value_counts().to_dict()}")
-    
-    # 7. Add summary rows at the end of CSV
+    # Write output
+    try:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        df.to_csv(output_path, index=False)
+        print(f"✓ Saved output to: {output_path}")
+    except Exception as e:
+        print(f"Error writing output: {e}")
+        raise
+
+    # Add summary rows at the end of CSV
     # Extract summary values
     try:
         etow = None
@@ -549,71 +547,89 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
         print(f"Warning: could not add summary rows: {e}")
 
 
-def process(input_path: str, output_path: str, compute_tas: bool = True, aircraft_type: Optional[str] = None) -> None:
-    """Process either a single CSV file or all CSVs in an input directory.
-
-    If `input_path` is a directory, `output_path` must be a directory. Each
-    CSV file in `input_path` will be processed and written to `output_path`
-    preserving the filename.
+def _process_directory(
+    input_dir: str,
+    output_dir: str,
+    compute_tas: bool = False,
+    aircraft_type: Optional[str] = None,
+    sensitivity_value: Optional[float] = None
+) -> None:
+    """Process all CSV files in a directory.
+    
+    Args:
+        input_dir: Path to directory with input CSV files
+        output_dir: Path to directory for output CSV files
+        compute_tas: Whether to compute TAS from wind data
+        aircraft_type: Aircraft type for computations
+        sensitivity_value: Temperature sensitivity value in Kelvin
     """
-    print("Input path:", repr(input_path))
-    in_path = Path(input_path)
-    print(f"Is dir: {in_path.is_dir()}")
-    print(f"Starting process for {input_path}")
-    out_path = Path(output_path)
-
-    if in_path.is_dir():
-        # Ensure output directory exists
-        out_path.mkdir(parents=True, exist_ok=True)
-
-        files = sorted(glob.glob(str(in_path / "*.csv")))
-        if not files:
-            print(f"No CSV files found in directory: {in_path}")
-            return
-
-        for f in files:
-            fname = Path(f).name
-            dest = out_path / fname
-            print(f"Processing {fname} -> {dest}")
-            try:
-                _process_file(f, str(dest), compute_tas=compute_tas, aircraft_type=aircraft_type)
-            except Exception as e:
-                print(f"Failed to process {fname}: {e}")
-    else:
-        # single file
-        _process_file(str(in_path), str(out_path), compute_tas=compute_tas, aircraft_type=aircraft_type)
-
-
-def main(argv: Optional[list] = None) -> int:
-    print("Starting main")
-    argv = argv if argv is not None else sys.argv[1:]
-    print("argv:", argv)
-    # support: python process_adsb_pipeline.py input.csv output.csv [aircraft_type]
-    if len(argv) >= 3:
-        print("len >= 3")
-        input_path, output_path = argv[0], argv[1]
-        # an `aircraft_type` which will be applied to every row.
-        aircraft_type = argv[2] if len(argv) >= 3 else None
-        if aircraft_type is None:
-            try:
-                atype = input("Aircraft type (e.g. 737, 320) [optional]: ").strip()
-                aircraft_type = atype if atype != "" else None
-            except Exception:
-                aircraft_type = None
+    input_dir = Path(input_dir)
+    output_dir = Path(output_dir)
     
-    else:
-        # interactive fallback
+    if not input_dir.exists():
+        print(f"Error: input directory does not exist: {input_dir}")
+        return
+    
+    csv_files = sorted(input_dir.glob("*.csv"))
+    if not csv_files:
+        print(f"Warning: no CSV files found in {input_dir}")
+        return
+    
+    print(f"\nProcessing {len(csv_files)} CSV files from {input_dir}")
+    print(f"Temperature sensitivity: {sensitivity_value} K")
+    print(f"Aircraft type: {aircraft_type}")
+    print(f"Output directory: {output_dir}\n")
+    
+    success_count = 0
+    error_count = 0
+    
+    for input_file in csv_files:
         try:
-            input_path = input("Input CSV path: ").strip()
-            output_path = input("Output CSV path: ").strip()
-            atype = input("Aircraft type (e.g. 737, 320) [optional]: ").strip()
-            aircraft_type = atype if atype != "" else None
-        except Exception:
-            print("Usage: python process_adsb_pipeline.py input.csv output.csv [aircraft_type]")
-            return 2
+            output_file = output_dir / input_file.name
+            _process_file(
+                str(input_file),
+                str(output_file),
+                compute_tas=compute_tas,
+                aircraft_type=aircraft_type,
+                sensitivity_value=sensitivity_value
+            )
+            success_count += 1
+        except Exception as e:
+            print(f"✗ Error processing {input_file.name}: {e}")
+            error_count += 1
     
-    print("Calling process")
-    process(input_path, output_path, compute_tas=True, aircraft_type=aircraft_type)
+    print(f"\n{'='*80}")
+    print(f"Processing complete: {success_count} successful, {error_count} errors")
+    print(f"{'='*80}\n")
+
+
+def main():
+    """Main entry point for temperature sensitivity pipeline."""
+    if len(sys.argv) < 5:
+        print(__doc__)
+        print("Error: Missing required arguments")
+        print("Usage: python temp_sensitivity_pipeline.py <input_folder> <output_folder> <sensitivity_value> <aircraft_type>")
+        sys.exit(1)
+    
+    input_folder = sys.argv[1]
+    output_folder = sys.argv[2]
+    
+    try:
+        sensitivity_value = float(sys.argv[3])
+    except ValueError:
+        print(f"Error: sensitivity_value must be a number, got: {sys.argv[3]}")
+        sys.exit(1)
+    
+    aircraft_type = sys.argv[4]
+    
+    # Process directory
+    _process_directory(
+        input_folder,
+        output_folder,
+        compute_tas=True,  # Always compute TAS
+        aircraft_type=aircraft_type,
+        sensitivity_value=sensitivity_value
+    )
 
 
 if __name__ == "__main__":

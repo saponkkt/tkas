@@ -39,8 +39,8 @@ if 'thrust' in sys.modules:
     del sys.modules['thrust']
 if 'Fuel' in sys.modules:
     del sys.modules['Fuel']
-if 'Mass' in sys.modules:
-    del sys.modules['Mass']
+if 'Mass_sent' in sys.modules:
+    del sys.modules['Mass_sent']
 
 from flight_phase import detect_flight_phase
 
@@ -57,20 +57,15 @@ else:
 import variable_mass
 import thrust as thrust_mod
 import Fuel as fuel_mod
-import Mass as mass_mod
+import Mass_sent as mass_mod
 import importlib.util
 
 
 print("Script loaded")
 
-def _process_file(input_path: str, output_path: str, compute_tas: bool = True, aircraft_type: Optional[str] = None) -> None:
+def _process_file(input_path: str, output_path: str, compute_tas: bool = True, aircraft_type: Optional[str] = None, deviation_percent: float = 0.0) -> None:
     """Process a single CSV file and write output CSV."""
     df = pd.read_csv(input_path)
-
-    # Remove any empty columns (Unnamed columns from Excel exports)
-    df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
-    if len(df.columns) < len(pd.read_csv(input_path).columns):
-        print(f"Removed {len(pd.read_csv(input_path).columns) - len(df.columns)} empty columns")
 
     # Parse Position into latitude and longitude if present
     if 'Position' in df.columns:
@@ -350,6 +345,30 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
         import traceback
         traceback.print_exc()
 
+    # 6.4 Optional: Apply MT sensitivity analysis AFTER optimizer (so it's applied to optimized mt)
+    if deviation_percent != 0.0:
+        try:
+            t0 = time.time()
+            df, sensitivity_result = mass_mod.apply_mt_sensitivity(
+                df,
+                fuel_at_time_col="Fuel_at_time_kg",
+                deviation_percent=deviation_percent,
+                phase_col="flight_phase",
+                phase_val="Takeoff"
+            )
+            t1 = time.time()
+            print(f"Timing: apply_mt_sensitivity took {t1-t0:.2f}s")
+            if sensitivity_result.get("status") == "success":
+                print(f"Applied MT sensitivity: {deviation_percent}% deviation")
+                print(f"  Baseline mt: {sensitivity_result.get('baseline_mt_at_phase'):.2f} kg")
+                print(f"  Adjusted mt: {sensitivity_result.get('adjusted_mt_at_phase'):.2f} kg")
+            else:
+                print(f"Warning: sensitivity analysis failed: {sensitivity_result.get('message')}")
+        except Exception as e:
+            print(f"Warning: apply_mt_sensitivity failed: {e}")
+            import traceback
+            traceback.print_exc()
+
     # 6.x Compute Total_Energy columns if available (CL, CD, D, Thrust_N_TE)
     try:
         from Total_Energy import add_CL, add_CD, add_D, add_Thrust_N_TE
@@ -549,7 +568,7 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
         print(f"Warning: could not add summary rows: {e}")
 
 
-def process(input_path: str, output_path: str, compute_tas: bool = True, aircraft_type: Optional[str] = None) -> None:
+def process(input_path: str, output_path: str, compute_tas: bool = True, aircraft_type: Optional[str] = None, deviation_percent: float = 0.0) -> None:
     """Process either a single CSV file or all CSVs in an input directory.
 
     If `input_path` is a directory, `output_path` must be a directory. Each
@@ -576,25 +595,36 @@ def process(input_path: str, output_path: str, compute_tas: bool = True, aircraf
             dest = out_path / fname
             print(f"Processing {fname} -> {dest}")
             try:
-                _process_file(f, str(dest), compute_tas=compute_tas, aircraft_type=aircraft_type)
+                _process_file(f, str(dest), compute_tas=compute_tas, aircraft_type=aircraft_type, deviation_percent=deviation_percent)
             except Exception as e:
                 print(f"Failed to process {fname}: {e}")
     else:
         # single file
-        _process_file(str(in_path), str(out_path), compute_tas=compute_tas, aircraft_type=aircraft_type)
+        _process_file(str(in_path), str(out_path), compute_tas=compute_tas, aircraft_type=aircraft_type, deviation_percent=deviation_percent)
 
 
 def main(argv: Optional[list] = None) -> int:
     print("Starting main")
     argv = argv if argv is not None else sys.argv[1:]
     print("argv:", argv)
-    # support: python process_adsb_pipeline.py input.csv output.csv [aircraft_type]
-    if len(argv) >= 3:
-        print("len >= 3")
+    # support: python sensitivity_tow_pipeline.py input.csv output.csv [deviation_percent] [aircraft_type]
+    if len(argv) >= 2:
+        print(f"len >= 2 (len={len(argv)})")
         input_path, output_path = argv[0], argv[1]
-        # an `aircraft_type` which will be applied to every row.
-        aircraft_type = argv[2] if len(argv) >= 3 else None
-        if aircraft_type is None:
+        
+        # Parse deviation_percent (argv[2])
+        deviation_percent = 0.0
+        if len(argv) >= 3:
+            try:
+                deviation_percent = float(argv[2])
+                print(f"Using deviation_percent={deviation_percent}%")
+            except ValueError:
+                print(f"Warning: argv[2]='{argv[2]}' is not a valid number, using default 0%")
+                deviation_percent = 0.0
+        
+        # Parse aircraft_type (argv[3])
+        aircraft_type = argv[3] if len(argv) >= 4 else None
+        if aircraft_type is None and len(argv) < 4:
             try:
                 atype = input("Aircraft type (e.g. 737, 320) [optional]: ").strip()
                 aircraft_type = atype if atype != "" else None
@@ -606,14 +636,19 @@ def main(argv: Optional[list] = None) -> int:
         try:
             input_path = input("Input CSV path: ").strip()
             output_path = input("Output CSV path: ").strip()
+            dev_str = input("Deviation percent for sensitivity (e.g., 5 for +5%) [optional, default 0]: ").strip()
+            try:
+                deviation_percent = float(dev_str) if dev_str != "" else 0.0
+            except ValueError:
+                deviation_percent = 0.0
             atype = input("Aircraft type (e.g. 737, 320) [optional]: ").strip()
             aircraft_type = atype if atype != "" else None
         except Exception:
-            print("Usage: python process_adsb_pipeline.py input.csv output.csv [aircraft_type]")
+            print("Usage: python sensitivity_tow_pipeline.py input.csv output.csv [deviation_percent] [aircraft_type]")
             return 2
     
     print("Calling process")
-    process(input_path, output_path, compute_tas=True, aircraft_type=aircraft_type)
+    process(input_path, output_path, compute_tas=True, aircraft_type=aircraft_type, deviation_percent=deviation_percent)
 
 
 if __name__ == "__main__":

@@ -79,7 +79,7 @@ def _normalize_input_df(df: pd.DataFrame) -> pd.DataFrame:
         return None
 
     # time / timestamp
-    tcol = pick('time', 'timestamp', 'ts')
+    tcol = pick('time', 'timestamp', 'ts', 'Timestamp')
     if tcol:
         col_map[tcol] = 'time'
 
@@ -141,6 +141,11 @@ def _normalize_input_df(df: pd.DataFrame) -> pd.DataFrame:
             df[c] = np.nan
 
     df["time"] = pd.to_numeric(df["time"], errors="coerce")
+    df["ground_speed"] = pd.to_numeric(df["ground_speed"], errors="coerce")
+    df["track"] = pd.to_numeric(df["track"], errors="coerce")
+    df["latitude"] = pd.to_numeric(df["latitude"], errors="coerce")
+    df["longitude"] = pd.to_numeric(df["longitude"], errors="coerce")
+    df["altitude"] = pd.to_numeric(df["altitude"], errors="coerce")
     df = df.dropna(subset=["time", "latitude", "longitude", "ground_speed", "track"]) 
     if len(df) == 0:
         return df
@@ -543,7 +548,7 @@ def compute_tas_for_dataframe(df: pd.DataFrame, prefer_gfs: bool = True, input_c
             gs_east = gs * math.sin(theta)
 
             u_kt, v_kt = sample_wind(row['latitude'], row['longitude'], row.get('altitude', 0.0), row['time'])
-            wind_speed = math.hypot(u_kt, v_kt) * (1+(-10/100))
+            wind_speed = math.hypot(u_kt, v_kt) * (1)
             wind_direction = (math.degrees(math.atan2(u_kt, v_kt)) + 360) % 360
             tas_2 = gs_north**2 + gs_east**2 - 2 * (gs_north * v_kt + gs_east * u_kt) + wind_speed**2
             tas = math.sqrt(tas_2)
