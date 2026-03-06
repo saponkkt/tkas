@@ -2,10 +2,10 @@ import subprocess
 import sys
 
 commands = [
-    ['python', 'process_adsb_pipeline.py', r'C:\Users\User\Desktop\Validation_TAS\CSV\Lion Air\HS-LGI\วันที่ 1 กันยายน 2568', r'C:\Users\User\Desktop\Validation_TAS\TAS\Lion Air\15000_25000\0.74\HS-LGI\วันที่ 1 กันยายน 2568', '737'],
-    ['python', 'process_adsb_pipeline.py', r'C:\Users\User\Desktop\Validation_TAS\CSV\Lion Air\HS-LGI\วันที่ 2 กันยายน 2568', r'C:\Users\User\Desktop\Validation_TAS\TAS\Lion Air\15000_25000\0.74\HS-LGI\วันที่ 2 กันยายน 2568', '737'],
-    ['python', 'process_adsb_pipeline.py', r'C:\Users\User\Desktop\Validation_TAS\CSV\Lion Air\HS-LGS\วันที่ 1 กันยายน 2568', r'C:\Users\User\Desktop\Validation_TAS\TAS\Lion Air\15000_25000\0.74\HS-LGS\วันที่ 1 กันยายน 2568', '737'],
-    ['python', 'process_adsb_pipeline.py', r'C:\Users\User\Desktop\Validation_TAS\CSV\Lion Air\HS-LGS\วันที่ 2 กันยายน 2568', r'C:\Users\User\Desktop\Validation_TAS\TAS\Lion Air\15000_25000\0.74\HS-LGS\วันที่ 2 กันยายน 2568', '737'],
+    ['python', 'process_adsb_pipeline.py', r'C:\Users\User\Desktop\Validation_TAS\CSV\Lion Air\HS-LGI\วันที่ 1 กันยายน 2568', r'C:\Users\User\Desktop\Validation_TAS\TAS\Lion Air\5000_15000\0.73\HS-LGI\วันที่ 1 กันยายน 2568', '737'],
+    ['python', 'process_adsb_pipeline.py', r'C:\Users\User\Desktop\Validation_TAS\CSV\Lion Air\HS-LGI\วันที่ 2 กันยายน 2568', r'C:\Users\User\Desktop\Validation_TAS\TAS\Lion Air\5000_15000\0.73\HS-LGI\วันที่ 2 กันยายน 2568', '737'],
+    ['python', 'process_adsb_pipeline.py', r'C:\Users\User\Desktop\Validation_TAS\CSV\Lion Air\HS-LGS\วันที่ 1 กันยายน 2568', r'C:\Users\User\Desktop\Validation_TAS\TAS\Lion Air\5000_15000\0.73\HS-LGS\วันที่ 1 กันยายน 2568', '737'],
+    ['python', 'process_adsb_pipeline.py', r'C:\Users\User\Desktop\Validation_TAS\CSV\Lion Air\HS-LGS\วันที่ 2 กันยายน 2568', r'C:\Users\User\Desktop\Validation_TAS\TAS\Lion Air\5000_15000\0.73\HS-LGS\วันที่ 2 กันยายน 2568', '737'],
 ]
 for i, cmd in enumerate(commands, 1):
     print(f"\n{'='*80}")
