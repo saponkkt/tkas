@@ -1,30 +1,63 @@
 import pandas as pd
 import numpy as np
 from datetime import timedelta
+import json
 import glob
 import os
 
 # =============================================================================
-#  1. BOEING CONFIGURATION
+#  1. CONFIGURATION
 # =============================================================================
-KT_TO_MS = 0.51444
-FT_TO_M = 0.3048
-THRESHOLD_ALT = 100
+DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'config.json')
 
-# --- BOEING PARAMETERS ---
-ROC_AVG = 34.36525 * FT_TO_M
-ROD_AVG = -25.96369 * FT_TO_M
-TAKEOFF_ROLL_TIME = int(round(29.5))
-LANDING_ROLL_TIME = int(round(30.4))
-LIFTOFF_SPD = 156.58747
-TOUCHDOWN_SPD = 142
-TAXI_SPD = 15
+
+def _load_preprocessing_config(aircraft_type='737', config_path=DEFAULT_CONFIG_PATH):
+    # Fallbacks preserve previous Boeing behavior if config is missing or incomplete.
+    default_measurement = {
+        'kt_to_ms': 0.51444,
+        'ft_to_m': 0.3048,
+        'threshold_alt': 100,
+    }
+    default_aircraft = {
+        'roc_avg': 34.36525,
+        'rod_avg': -25.96369,
+        'takeoff_roll_time': 29.5,
+        'landing_roll_time': 30.4,
+        'liftoff_spd': 156.58747,
+        'touchdown_spd': 142,
+        'taxi_spd': 15,
+    }
+
+    config = {}
+    if os.path.exists(config_path):
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+
+    measurement = {**default_measurement, **config.get('measurement', {})}
+
+    aircraft_key = str(aircraft_type) if aircraft_type is not None else '737'
+    aircraft_cfg = config.get(aircraft_key, config.get('737', {}))
+    aircraft = {**default_aircraft, **aircraft_cfg}
+
+    ft_to_m = float(measurement['ft_to_m'])
+    return {
+        'KT_TO_MS': float(measurement['kt_to_ms']),
+        'FT_TO_M': ft_to_m,
+        'THRESHOLD_ALT': float(measurement['threshold_alt']),
+        'ROC_AVG': float(aircraft['roc_avg']) * ft_to_m,
+        'ROD_AVG': float(aircraft['rod_avg']) * ft_to_m,
+        'TAKEOFF_ROLL_TIME': int(round(float(aircraft['takeoff_roll_time']))),
+        'LANDING_ROLL_TIME': int(round(float(aircraft['landing_roll_time']))),
+        'LIFTOFF_SPD': float(aircraft['liftoff_spd']),
+        'TOUCHDOWN_SPD': float(aircraft['touchdown_spd']),
+        'TAXI_SPD': float(aircraft['taxi_spd']),
+    }
 
 # =============================================================================
 #  2. HELPER FUNCTIONS
 # =============================================================================
 
-def parse_position_column(df):
+def _parse_position_column(df):
     df.columns = df.columns.str.strip()
     if 'Position' in df.columns:
         try:
@@ -36,7 +69,7 @@ def parse_position_column(df):
             print(f"   [Error] Parsing Position failed: {e}")
     return df
 
-def preprocess_adsb_data(df):
+def _preprocess_adsb_data(df):
     print(f"   [Preprocess] Resampling (Cubic=Lat/Lon, Circular=Direction, Linear=Others)...")
 
     if 'UTC_datetime' not in df.columns:
@@ -89,10 +122,10 @@ def preprocess_adsb_data(df):
 
     return df_resampled.reset_index()
 
-def generate_takeoff_phase(ref_row, original_cols):
+def _generate_takeoff_phase(ref_row, original_cols, cfg):
     ref_time = ref_row['UTC_datetime']
-    ref_alt_m = ref_row['Altitude'] * FT_TO_M
-    ref_spd_ms = ref_row['Speed'] * KT_TO_MS
+    ref_alt_m = ref_row['Altitude'] * cfg['FT_TO_M']
+    ref_spd_ms = ref_row['Speed'] * cfg['KT_TO_MS']
 
     constant_lat = ref_row['Latitude']
     constant_lon = ref_row['Longitude']
@@ -103,41 +136,41 @@ def generate_takeoff_phase(ref_row, original_cols):
     generated_data = []
     curr_time = ref_time
 
-    time_climb = int(ref_alt_m / ROC_AVG)
+    time_climb = int(ref_alt_m / cfg['ROC_AVG'])
     for t in range(time_climb):
         curr_time -= timedelta(seconds=1)
-        h_now = ROC_AVG * (time_climb - t - 1)
+        h_now = cfg['ROC_AVG'] * (time_climb - t - 1)
         progress = (time_climb - t - 1) / max(1, time_climb)
-        v_diff = ref_spd_ms - (LIFTOFF_SPD * KT_TO_MS)
-        v_now = (LIFTOFF_SPD * KT_TO_MS) + (v_diff * progress)
+        v_diff = ref_spd_ms - (cfg['LIFTOFF_SPD'] * cfg['KT_TO_MS'])
+        v_now = (cfg['LIFTOFF_SPD'] * cfg['KT_TO_MS']) + (v_diff * progress)
 
         row = static_data.copy()
         row.update({
-            'UTC_datetime': curr_time, 'Altitude': max(0, round(h_now / FT_TO_M)),
-            'Speed': round(v_now / KT_TO_MS), 'Latitude': constant_lat, 'Longitude': constant_lon
+            'UTC_datetime': curr_time, 'Altitude': max(0, round(h_now / cfg['FT_TO_M'])),
+            'Speed': round(v_now / cfg['KT_TO_MS']), 'Latitude': constant_lat, 'Longitude': constant_lon
         })
         generated_data.append(row)
 
     curr_time_ground = generated_data[-1]['UTC_datetime'] if generated_data else ref_time
-    accel = (LIFTOFF_SPD * KT_TO_MS) / TAKEOFF_ROLL_TIME
-    for t in range(TAKEOFF_ROLL_TIME):
+    accel = (cfg['LIFTOFF_SPD'] * cfg['KT_TO_MS']) / cfg['TAKEOFF_ROLL_TIME']
+    for t in range(cfg['TAKEOFF_ROLL_TIME']):
         curr_time_ground -= timedelta(seconds=1)
-        v_now = (LIFTOFF_SPD * KT_TO_MS) - (accel * (t+1))
+        v_now = (cfg['LIFTOFF_SPD'] * cfg['KT_TO_MS']) - (accel * (t+1))
 
         row = static_data.copy()
         row.update({
             'UTC_datetime': curr_time_ground, 'Altitude': 0,
-            'Speed': max(0, round(v_now / KT_TO_MS)), 'Latitude': constant_lat, 'Longitude': constant_lon
+            'Speed': max(0, round(v_now / cfg['KT_TO_MS'])), 'Latitude': constant_lat, 'Longitude': constant_lon
         })
         generated_data.append(row)
 
     generated_data.reverse()
     return pd.DataFrame(generated_data)
 
-def generate_landing_phase(ref_row, original_cols):
+def _generate_landing_phase(ref_row, original_cols, cfg):
     ref_time = ref_row['UTC_datetime']
-    ref_alt_m = ref_row['Altitude'] * FT_TO_M
-    ref_spd_ms = ref_row['Speed'] * KT_TO_MS
+    ref_alt_m = ref_row['Altitude'] * cfg['FT_TO_M']
+    ref_spd_ms = ref_row['Speed'] * cfg['KT_TO_MS']
 
     constant_lat = ref_row['Latitude']
     constant_lon = ref_row['Longitude']
@@ -148,37 +181,37 @@ def generate_landing_phase(ref_row, original_cols):
     generated_data = []
     curr_time = ref_time
 
-    time_desc = int(ref_alt_m / abs(ROD_AVG))
+    time_desc = int(ref_alt_m / abs(cfg['ROD_AVG']))
     for t in range(time_desc):
         curr_time += timedelta(seconds=1)
-        h_now = ref_alt_m - (abs(ROD_AVG) * (t + 1))
+        h_now = ref_alt_m - (abs(cfg['ROD_AVG']) * (t + 1))
         progress = (t + 1) / max(1, time_desc)
-        v_diff = ref_spd_ms - (TOUCHDOWN_SPD * KT_TO_MS)
+        v_diff = ref_spd_ms - (cfg['TOUCHDOWN_SPD'] * cfg['KT_TO_MS'])
         v_now = ref_spd_ms - (v_diff * progress)
 
         row = static_data.copy()
         row.update({
-            'UTC_datetime': curr_time, 'Altitude': max(0, round(h_now / FT_TO_M)),
-            'Speed': round(v_now / KT_TO_MS), 'Latitude': constant_lat, 'Longitude': constant_lon
+            'UTC_datetime': curr_time, 'Altitude': max(0, round(h_now / cfg['FT_TO_M'])),
+            'Speed': round(v_now / cfg['KT_TO_MS']), 'Latitude': constant_lat, 'Longitude': constant_lon
         })
         generated_data.append(row)
 
     curr_time_ground = generated_data[-1]['UTC_datetime'] if generated_data else ref_time
 
-    speed_start = TOUCHDOWN_SPD * KT_TO_MS
-    speed_target = TAXI_SPD * KT_TO_MS
+    speed_start = cfg['TOUCHDOWN_SPD'] * cfg['KT_TO_MS']
+    speed_target = cfg['TAXI_SPD'] * cfg['KT_TO_MS']
     speed_diff = speed_start - speed_target
 
-    for t in range(LANDING_ROLL_TIME):
+    for t in range(cfg['LANDING_ROLL_TIME']):
         curr_time_ground += timedelta(seconds=1)
 
-        progress = (t + 1) / LANDING_ROLL_TIME
+        progress = (t + 1) / cfg['LANDING_ROLL_TIME']
         v_now = speed_start - (speed_diff * progress)
 
         row = static_data.copy()
         row.update({
             'UTC_datetime': curr_time_ground, 'Altitude': 0,
-            'Speed': round(v_now / KT_TO_MS),
+            'Speed': round(v_now / cfg['KT_TO_MS']),
             'Latitude': constant_lat, 'Longitude': constant_lon
         })
         generated_data.append(row)
@@ -188,31 +221,27 @@ def generate_landing_phase(ref_row, original_cols):
 # =============================================================================
 #  3. MAIN BATCH EXECUTION
 # =============================================================================
-print("🔍 Scanning for CSV files")
-csv_files = glob.glob('*.csv')
-if not csv_files: raise SystemExit("❌ No CSV found!")
 
-print(f"✅ Found {len(csv_files)} files -> Processing Boeing Profile\n" + "="*50)
-
-for i, filename in enumerate(csv_files):
-    print(f"[{i+1}/{len(csv_files)}] ⚙️ Processing: {filename}")
+def preprocessing(filename: str, aircraft_type: str = '737', config_path: str = DEFAULT_CONFIG_PATH):
     try:
+        cfg = _load_preprocessing_config(aircraft_type=aircraft_type, config_path=config_path)
+
         df = pd.read_csv(filename)
         original_cols = df.columns.tolist()
-        df = parse_position_column(df)
+        df = _parse_position_column(df)
 
         df['UTC_datetime'] = pd.to_datetime(df['UTC'], errors='coerce')
-        df = preprocess_adsb_data(df)
+        df = _preprocess_adsb_data(df)
 
         start_row = df.iloc[0]
         df_head = pd.DataFrame()
-        if start_row['Altitude'] > THRESHOLD_ALT:
-            df_head = generate_takeoff_phase(start_row, original_cols)
+        if start_row['Altitude'] > cfg['THRESHOLD_ALT']:
+            df_head = _generate_takeoff_phase(start_row, original_cols, cfg)
 
         end_row = df.iloc[-1]
         df_tail = pd.DataFrame()
-        if end_row['Altitude'] > THRESHOLD_ALT:
-            df_tail = generate_landing_phase(end_row, original_cols)
+        if end_row['Altitude'] > cfg['THRESHOLD_ALT']:
+            df_tail = _generate_landing_phase(end_row, original_cols, cfg)
 
         df_final = pd.concat([df_head, df, df_tail], ignore_index=True)
 
@@ -220,17 +249,13 @@ for i, filename in enumerate(csv_files):
         df_final['UTC'] = df_final['UTC_datetime'].dt.strftime('%Y-%m-%dT%H:%M:%SZ')
 
         if 'Position' in original_cols:
-             df_final['Position'] = df_final['Latitude'].map('{:.6f}'.format) + ',' + df_final['Longitude'].map('{:.6f}'.format)
+            df_final['Position'] = df_final['Latitude'].map('{:.6f}'.format) + ',' + df_final['Longitude'].map('{:.6f}'.format)
 
         valid_cols = [c for c in original_cols if c in df_final.columns]
         df_export = df_final[valid_cols].copy()
 
-        output_file = filename.replace('.csv', '_Boeing_Final.csv')
+        output_file = filename.replace('.csv', '_preprocessed.csv')
         df_export.to_csv(output_file, index=False)
         print(f"   ---> ✅ Saved: {output_file}")
-
     except Exception as e:
         print(f"   ---> ❌ Error with {filename}: {e}")
-
-print("="*50)
-print(f"🎉 All Done!")

@@ -6,33 +6,70 @@ services:
     container_name: flight-backend
     ports:
       - "8000:8000"
+    environment:
+      - MONGO_URI=mongodb://flight_admin:flight_secret@mongo:27017/flight_app?authSource=admin
+      - MONGO_DB=flight_app
+    depends_on:
+      - mongo
     networks:
       - flight-net
 
-  n8n:
-    image: n8nio/n8n:latest
-    container_name: flight-n8n
-    ports:
-      - "5678:5678"
+  mongo:
+    image: mongo:7
+    container_name: flight-mongo
+    restart: unless-stopped
     environment:
-      - N8N_BASIC_AUTH_ACTIVE=false
-      - N8N_HOST=n8n
-      - N8N_PORT=5678
-      - N8N_PROTOCOL=http
-      - NODE_ENV=production
-      - GENERIC_TIMEZONE=UTC
+      - MONGO_INITDB_ROOT_USERNAME=flight_admin
+      - MONGO_INITDB_ROOT_PASSWORD=flight_secret
+      - MONGO_INITDB_DATABASE=flight_app
+    ports:
+      - "27017:27017"
     volumes:
-      - n8n_data:/home/node/.n8n
-      - ./n8n:/home/node/n8n-local
+      - mongo_data:/data/db
     networks:
       - flight-net
+
+  mongo-express:
+    image: mongo-express:1.0.2
+    container_name: flight-mongo-express
+    restart: unless-stopped
+    depends_on:
+      - mongo
+    environment:
+      - ME_CONFIG_MONGODB_ADMINUSERNAME=flight_admin
+      - ME_CONFIG_MONGODB_ADMINPASSWORD=flight_secret
+      - ME_CONFIG_MONGODB_URL=mongodb://flight_admin:flight_secret@mongo:27017/
+      - ME_CONFIG_BASICAUTH_USERNAME=admin
+      - ME_CONFIG_BASICAUTH_PASSWORD=admin123
+    ports:
+      - "8081:8081"
+    networks:
+      - flight-net
+
+  # n8n:
+  #   image: n8nio/n8n:latest
+  #   container_name: flight-n8n
+  #   ports:
+  #     - "5678:5678"
+  #   environment:
+  #     - N8N_BASIC_AUTH_ACTIVE=false
+  #     - N8N_HOST=n8n
+  #     - N8N_PORT=5678
+  #     - N8N_PROTOCOL=http
+  #     - NODE_ENV=production
+  #     - GENERIC_TIMEZONE=UTC
+  #   volumes:
+  #     - n8n_data:/home/node/.n8n
+  #     - ./n8n:/home/node/n8n-local
+  #   networks:
+  #     - flight-net
 
 networks:
   flight-net:
     driver: bridge
 
 volumes:
-  n8n_data:
+  mongo_data:
     driver: local
 
 

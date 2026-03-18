@@ -7,5 +7,6 @@ starlette
 streamlit
 xarray
 cdsapi
+pymongo
 
 

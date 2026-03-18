@@ -1,4 +1,9 @@
 {
+    "measurement": {
+        "kt_to_ms": 0.51444,
+        "ft_to_m": 0.3048,
+        "threshold_alt": 100
+    },
     "737": {
         "CTc1": 146590,
         "CTc2": 53872,
@@ -59,7 +64,14 @@
         },
         "mew": 0.02,
         "wing_area_clean": 124.65,
-        "wing_area_flap": 143.04
+        "wing_area_flap": 143.04,
+        "roc_avg": 34.36525,
+        "rod_avg": -25.96369,
+        "takeoff_roll_time": 29.5,
+        "landing_roll_time": 30.4,
+        "liftoff_spd": 156.58747,
+        "touchdown_spd": 142,
+        "taxi_spd": 15
     },
 
     "320": {
@@ -122,6 +134,13 @@
         },
         "mew": 0.02,
         "wing_area_clean": 122.6,
-        "wing_area_flap": 143.4420
+        "wing_area_flap": 143.4420,
+        "roc_avg": 28.3163,
+        "rod_avg": -22.87712,
+        "takeoff_roll_time": 30.8,
+        "landing_roll_time": 28.8,
+        "liftoff_spd": 134.98920,
+        "touchdown_spd": 140,
+        "taxi_spd": 15
     }
 }
