@@ -1,165 +1,163 @@
 'use client';
 
-import React, { useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, Polyline, Marker, Popup, Tooltip, useMap } from 'react-leaflet';
+import React, { useEffect, useMemo } from 'react';
+import {
+  MapContainer,
+  TileLayer,
+  Polyline,
+  CircleMarker,
+  Popup,
+  useMap,
+} from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { FlightTrackPoint } from '@/services/flightApi';
 
-// Fix for default marker icons in Next.js
-delete (L.Icon.Default.prototype as any)._getIconUrl;
+delete (L.Icon.Default.prototype as unknown as { _getIconUrl?: unknown })._getIconUrl;
 L.Icon.Default.mergeOptions({
-  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
-  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
-  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
+  iconRetinaUrl: '/leaflet/marker-icon-2x.png',
+  iconUrl: '/leaflet/marker-icon.png',
+  shadowUrl: '/leaflet/marker-shadow.png',
 });
 
-// Custom colored icons using divIcon
-const createColoredIcon = (color: string) => {
-  return L.divIcon({
-    className: 'custom-colored-marker',
-    html: `<div style="
-      width: 24px;
-      height: 24px;
-      background-color: ${color};
-      border: 3px solid white;
-      border-radius: 50%;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-    "></div>`,
-    iconSize: [24, 24],
-    iconAnchor: [12, 12],
-  });
-};
-
-const startIcon = createColoredIcon('#10b981'); // Green
-const endIcon = createColoredIcon('#ef4444'); // Red
-
-interface MapBoundsAdjusterProps {
-  bounds: L.LatLngBounds;
+interface BoundsFitterProps {
+  positions: [number, number][];
 }
 
-function MapBoundsAdjuster({ bounds }: MapBoundsAdjusterProps) {
+function BoundsFitter({ positions }: BoundsFitterProps) {
   const map = useMap();
   useEffect(() => {
-    if (bounds.isValid()) {
-      map.fitBounds(bounds, { padding: [50, 50] });
+    if (positions.length > 0) {
+      const bounds = L.latLngBounds(positions);
+      if (bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [40, 40] });
+      }
     }
-  }, [bounds, map]);
+  }, [positions, map]);
   return null;
 }
 
 interface FlightMapProps {
-  track: FlightTrackPoint[];
+  trackPoints: Array<{ lat: number; lon: number }>;
 }
 
-export default function FlightMap({ track }: FlightMapProps) {
-  const mapRef = useRef<L.Map | null>(null);
+export default function FlightMap({ trackPoints }: FlightMapProps) {
+  const positions = useMemo(
+    () => trackPoints.map((p) => [p.lat, p.lon] as [number, number]),
+    [trackPoints]
+  );
 
-  if (!track || track.length === 0) {
+  const displacementLine = useMemo((): [number, number][] => {
+    if (trackPoints.length < 2) return [];
+    const first = trackPoints[0];
+    const last = trackPoints[trackPoints.length - 1];
+    return [
+      [first.lat, first.lon],
+      [last.lat, last.lon],
+    ];
+  }, [trackPoints]);
+
+  if (!trackPoints || trackPoints.length === 0) {
     return (
-      <div className="bg-white rounded-lg shadow-md border border-gray-200 h-96 flex items-center justify-center">
+      <div className="h-full min-h-[400px] bg-white rounded-xl overflow-hidden shadow-sm flex items-center justify-center">
         <p className="text-gray-500">No flight track data available</p>
       </div>
     );
   }
 
-  const positions = track.map((point) => [point.lat, point.lon] as [number, number]);
-  const bounds = L.latLngBounds(positions);
-  const startPoint = track[0];
-  const endPoint = track[track.length - 1];
+  const center = positions[Math.floor(positions.length / 2)];
+  const start = trackPoints[0];
+  const end = trackPoints[trackPoints.length - 1];
 
   return (
-    <div className="bg-white rounded-lg shadow-md border border-gray-200 overflow-hidden flex flex-col h-full">
-      <div className="px-6 py-4 border-b border-gray-200 bg-gray-50">
-        <h2 className="text-xl font-semibold text-gray-900">Flight Track</h2>
-        <p className="text-sm text-gray-600 mt-1">Interactive map with ADS-B track visualization</p>
-      </div>
-      <div className="flex-1 w-full relative min-h-96">
-        <MapContainer
-          center={[track[Math.floor(track.length / 2)].lat, track[Math.floor(track.length / 2)].lon]}
-          zoom={6}
-          style={{ height: '100%', width: '100%' }}
-          className="z-0"
+    <div className="h-full min-h-[400px] relative rounded-xl overflow-hidden shadow-sm">
+      <MapContainer
+        center={[center[0], center[1]]}
+        zoom={6}
+        style={{ height: '100%', minHeight: '400px', width: '100%' }}
+        className="z-0"
+      >
+        <TileLayer
+          attribution="© OpenStreetMap © CARTO"
+          url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"
+        />
+        <BoundsFitter positions={positions} />
+        <Polyline
+          positions={positions}
+          pathOptions={{ color: '#1d4ed8', weight: 2.5, opacity: 0.9 }}
+        />
+        <Polyline
+          positions={displacementLine}
+          pathOptions={{
+            color: '#60a5fa',
+            weight: 2,
+            dashArray: '10 6',
+            opacity: 0.75,
+          }}
+        />
+        <CircleMarker
+          center={[start.lat, start.lon]}
+          radius={8}
+          pathOptions={{
+            color: '#16a34a',
+            fillColor: '#16a34a',
+            fillOpacity: 1,
+            weight: 2,
+          }}
         >
-          <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          <Popup>
+            Departure<br />
+            {start.lat.toFixed(4)}, {start.lon.toFixed(4)}
+          </Popup>
+        </CircleMarker>
+        <CircleMarker
+          center={[end.lat, end.lon]}
+          radius={8}
+          pathOptions={{
+            color: '#dc2626',
+            fillColor: '#dc2626',
+            fillOpacity: 1,
+            weight: 2,
+          }}
+        >
+          <Popup>
+            Arrival<br />
+            {end.lat.toFixed(4)}, {end.lon.toFixed(4)}
+          </Popup>
+        </CircleMarker>
+      </MapContainer>
+      <div
+        className="absolute z-[1000] bg-white/90 border border-gray-200 rounded-lg px-3 py-2 text-gray-700 text-xs shadow-sm space-y-0.5"
+        style={{ bottom: 12, left: 12 }}
+      >
+        <div className="flex items-center gap-2">
+          <span
+            className="w-2 h-2 rounded-full shrink-0"
+            style={{ backgroundColor: '#16a34a' }}
           />
-          <MapBoundsAdjuster bounds={bounds} />
-          <Polyline
-            positions={positions}
-            pathOptions={{ color: '#3B82F6', weight: 3, opacity: 0.8 }}
-            eventHandlers={{
-              mouseover: (e) => {
-                const layer = e.target;
-                layer.setStyle({ weight: 5, color: '#1D4ED8' });
-              },
-              mouseout: (e) => {
-                const layer = e.target;
-                layer.setStyle({ weight: 3, color: '#3B82F6' });
-              },
-            }}
+          <span>DEPARTURE</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span
+            className="w-2 h-2 rounded-full shrink-0"
+            style={{ backgroundColor: '#dc2626' }}
           />
-          {track.map((point, idx) => {
-            if (idx === 0) return null;
-            const prev = track[idx - 1];
-            return (
-              <Polyline
-                key={`segment-${idx}`}
-                positions={[[prev.lat, prev.lon], [point.lat, point.lon]]}
-                pathOptions={{ color: 'transparent', weight: 14, opacity: 0 }}
-              >
-                <Tooltip direction="top" offset={[0, -10]} opacity={1} permanent={false}>
-                  <div className="text-xs">
-                    <strong>Lat:</strong> {point.lat.toFixed(4)} | <strong>Lon:</strong> {point.lon.toFixed(4)}
-                    <br />
-                    <strong>Time:</strong> {new Date(point.timestamp).toISOString().replace('T', ' ').slice(0, 19)} UTC
-                    {point.altitude != null && !Number.isNaN(point.altitude) && (
-                      <>
-                        <br />
-                        <strong>Alt:</strong> {point.altitude.toFixed(0)} m
-                      </>
-                    )}
-                    {point.speed != null && !Number.isNaN(point.speed) && (
-                      <>
-                        <br />
-                        <strong>Speed:</strong> {point.speed.toFixed(0)} kt
-                      </>
-                    )}
-                  </div>
-                </Tooltip>
-              </Polyline>
-            );
-          })}
-          <Marker position={[startPoint.lat, startPoint.lon]} icon={startIcon}>
-            <Popup>
-              <div className="text-sm">
-                <strong>Departure</strong>
-                <br />
-                Lat: {startPoint.lat.toFixed(4)}
-                <br />
-                Lon: {startPoint.lon.toFixed(4)}
-                <br />
-                Time: {new Date(startPoint.timestamp).toLocaleString()}
-              </div>
-            </Popup>
-          </Marker>
-          <Marker position={[endPoint.lat, endPoint.lon]} icon={endIcon}>
-            <Popup>
-              <div className="text-sm">
-                <strong>Arrival</strong>
-                <br />
-                Lat: {endPoint.lat.toFixed(4)}
-                <br />
-                Lon: {endPoint.lon.toFixed(4)}
-                <br />
-                Time: {new Date(endPoint.timestamp).toLocaleString()}
-              </div>
-            </Popup>
-          </Marker>
-        </MapContainer>
+          <span>ARRIVAL</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span
+            className="w-3 h-0.5 shrink-0"
+            style={{ backgroundColor: '#1d4ed8', opacity: 0.9 }}
+          />
+          <span>FLIGHT PATH</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span
+            className="w-3 h-0.5 shrink-0 border-t-2 border-dashed"
+            style={{ borderColor: '#60a5fa', opacity: 0.75 }}
+          />
+          <span>DISPLACEMENT</span>
+        </div>
       </div>
     </div>
   );
 }
-

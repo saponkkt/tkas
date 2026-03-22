@@ -79,8 +79,9 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
     rename_dict = {}
     if 'Altitude' in df.columns and 'altitude' not in df.columns:
         rename_dict['Altitude'] = 'altitude'
-    if 'Speed' in df.columns and 'TAS_kt' not in df.columns:
-        rename_dict['Speed'] = 'TAS_kt'
+    # ADS-B "Speed" is ground speed (knots), not true airspeed — TAS is computed from wind + GS.
+    if "Speed" in df.columns and "ground_speed" not in df.columns:
+        rename_dict["Speed"] = "ground_speed"
     if 'Direction' in df.columns and 'track' not in df.columns:
         rename_dict['Direction'] = 'track'
     df.rename(columns=rename_dict, inplace=True)

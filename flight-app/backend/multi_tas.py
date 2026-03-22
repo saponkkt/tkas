@@ -67,6 +67,45 @@ def pressure_hPa_from_alt_ft(alt_ft: float) -> float:
     return 1013.25 * (1 - 0.0065 * alt_m / 288.15) ** 5.255
 
 
+def _haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in nautical miles (spherical Earth)."""
+    R = 3440.065  # Earth radius, nm
+    φ1, φ2 = math.radians(lat1), math.radians(lat2)
+    dφ = math.radians(lat2 - lat1)
+    dλ = math.radians(lon2 - lon1)
+    a = math.sin(dφ / 2) ** 2 + math.cos(φ1) * math.cos(φ2) * math.sin(dλ / 2) ** 2
+    c = 2 * math.asin(min(1.0, math.sqrt(a)))
+    return R * c
+
+
+def _fill_ground_speed_from_track_knots(df: pd.DataFrame) -> pd.DataFrame:
+    """Derive ground speed in knots from lat/lon/time when speed is missing (nm/h = kt)."""
+    df = df.copy()
+    n = len(df)
+    if n == 0:
+        return df
+    gs: list[float] = [float("nan")] * n
+    for i in range(1, n):
+        try:
+            lat1 = float(df["latitude"].iloc[i - 1])
+            lon1 = float(df["longitude"].iloc[i - 1])
+            lat2 = float(df["latitude"].iloc[i])
+            lon2 = float(df["longitude"].iloc[i])
+            t1 = int(df["time"].iloc[i - 1])
+            t2 = int(df["time"].iloc[i])
+            dt = max(t2 - t1, 1)
+            d_nm = _haversine_nm(lat1, lon1, lat2, lon2)
+            gs[i] = (d_nm / float(dt)) * 3600.0
+        except (ValueError, TypeError, OverflowError):
+            gs[i] = float("nan")
+    if n > 1 and math.isfinite(gs[1]):
+        gs[0] = gs[1]
+    else:
+        gs[0] = 0.0
+    df["ground_speed"] = gs
+    return df
+
+
 def _normalize_input_df(df: pd.DataFrame) -> pd.DataFrame:
     # case-insensitive normalization: map common variants to canonical names
     col_map = {}
@@ -141,6 +180,9 @@ def _normalize_input_df(df: pd.DataFrame) -> pd.DataFrame:
             df[c] = np.nan
 
     df["time"] = pd.to_numeric(df["time"], errors="coerce")
+    # Ground speed is in knots (ADS-B). If absent, derive from track geometry.
+    if not df["ground_speed"].notna().any():
+        df = _fill_ground_speed_from_track_knots(df)
     df = df.dropna(subset=["time", "latitude", "longitude", "ground_speed", "track"]) 
     if len(df) == 0:
         return df
@@ -533,6 +575,8 @@ def compute_tas_for_dataframe(df: pd.DataFrame, prefer_gfs: bool = True, input_c
 
     for i, row in df.iterrows():
         try:
+            # ground_speed: knots (ADS-B or derived from track). Wind components: knots.
+            # TAS_kt: true airspeed magnitude in knots (vector GS − wind in east/north).
             gs = float(row['ground_speed'])
             trk_deg = float(row['track'])
             if not np.isfinite(gs) or not np.isfinite(trk_deg):

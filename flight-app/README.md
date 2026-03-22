@@ -1,239 +1,262 @@
-## Flight App – FlightRadar24 CSV Analyzer
+# TKAS — เครื่องมือวิเคราะห์เที่ยวบิน (Flight Analysis Tool)
 
-เว็บแอป **full-stack** สำหรับวิเคราะห์ข้อมูลเที่ยวบินจากไฟล์ CSV (เช่น export จาก FlightRadar24) และคำนวณ:
-
-- **ระยะทาง Great Circle (NM)** ด้วย Haversine formula  
-- **Fuel consumption (kg)** = distance\_nm × 4.2  
-- **Mass estimate (kg)** = fuel × 1.05  
-- **CO₂ emissions (kg)** = fuel × 3.16  
-
-พร้อมทั้งแสดง **เส้นทางการบินบนแผนที่** และตัวอย่าง **n8n workflow** สำหรับเชื่อมอัตโนมัติ
+แอปพลิเคชันเว็บแบบ full-stack สำหรับวิเคราะห์ข้อมูล ADS-B จากไฟล์ CSV ช่วยคำนวณเฟสการบิน การใช้เชื้อเพลิง การปล่อย CO₂ แสดงเส้นทางบนแผนที่ และสรุปผลแบบมืออาชีพ
 
 ---
 
-## โครงสร้างโปรเจค
+## สารบัญ
 
-- `backend/` – FastAPI + Pandas API สำหรับคำนวณ
-- `frontend/` – Next.js + React + Tailwind CSS + Leaflet UI
-- `n8n/` – ไฟล์ workflow JSON สำหรับ import เข้า n8n
-- `docker-compose.yaml` – รัน backend + n8n ด้วย Docker
-- `.gitignore` – ignore สำหรับ Node.js + Python
+1. [ความสามารถหลัก](#ความสามารถหลัก)
+2. [สถาปัตยกรรมระบบ](#สถาปัตยกรรมระบบ)
+3. [ความต้องการของระบบ](#ความต้องการของระบบ)
+4. [รันแบบพัฒนาในเครื่อง (Localhost)](#รันแบบพัฒนาในเครื่อง-localhost)
+5. [รันด้วย Docker Compose](#รันด้วย-docker-compose)
+6. [ตัวแปรสภาพแวดล้อม](#ตัวแปรสภาพแวดล้อม)
+7. [รูปแบบไฟล์ CSV ที่รองรับ](#รูปแบบไฟล์-csv-ที่รองรับ)
+8. [โครงสร้างโปรเจกต์](#โครงสร้างโปรเจกต์)
+9. [API หลัก (Backend)](#api-หลัก-backend)
+10. [การแก้ปัญหาเบื้องต้น](#การแก้ปัญหาเบื้องต้น)
 
 ---
 
-## Backend (FastAPI + Pandas)
+## ความสามารถหลัก
 
-### ติดตั้งและรันแบบ local
+- **อัปโหลด CSV** — ตรวจสอบคอลัมน์ที่จำเป็น รองรับข้อมูล ADS-B / FlightRadar24 แบบดิบ
+- **ประมวลผลเบื้องหลัง** — ทำความสะอาดข้อมูล รีแซมเปิล รันสายไปป์ `process_adsb_pipeline` เก็บผลใน **MongoDB**
+- **ความคืบหน้าแบบ SSE** — แสดงขั้นตอนประมวลผลบนหน้าเว็บแบบเรียลไทม์
+- **ผลลัพธ์** — ETOW, เชื้อเพลิงรวม/เที่ยว, CO₂, ระยะทาง, ระยะเวลา, ความมั่นใจของข้อมูล
+- **เส้นทางบิน** — แผนที่ (Leaflet), กราฟความสูง/ความเร็ว/น้ำหนัก/เชื้อเพลิง/CO₂ (Chart.js)
+- **ตารางเฟสการบิน** — 9 เฟสมาตรฐาน พร้อม scaling ให้สอดคล้องกับสรุปรวม
+- **ส่วนหัวเส้นทาง (Route header)** — ประมาณสนามบินต้นทาง/ปลายทาง (Overpass + Nominatim), วันที่จาก UTC ใน CSV
+- **ตรวจสอบความสมบูรณ์ข้อมูล** — สถานะเฟส (ต้นฉบับ / สร้างเติม / ขาด)
+
+---
+
+## สถาปัตยกรรมระบบ
+
+
+| ชั้น             | เทคโนโลยี                                                                                             |
+| ---------------- | ----------------------------------------------------------------------------------------------------- |
+| **Frontend**     | Next.js 14 (App Router), React 18, TypeScript, Tailwind CSS                                           |
+| **แผนที่**       | Leaflet + react-leaflet (dynamic import, `ssr: false`)                                                |
+| **กราฟ**         | Chart.js + react-chartjs-2                                                                            |
+| **Backend**      | FastAPI (ไฟล์หลัก `main.py`), Uvicorn                                                                 |
+| **ฐานข้อมูล**    | MongoDB (PyMongo)                                                                                     |
+| **ประมวลผล**     | `preprocessing.py`, `process_adsb_pipeline.py`, `flight_phase.py`                                     |
+| **API ทางเลือก** | `backend/api/app.py` — รองรับ `/calculate` แบบอัปโหลดแล้วรันสคริปต์ไปป์ไลน์ (ใช้เมื่อ deploy แยก API) |
+
+
+ข้อมูลรันหนึ่งครั้ง (`run`) เก็บเป็นเอกสารใน `flight_runs` และแถวไทม์ซีรีส์ใน `flight_output_rows` (เมื่อบันทึกผ่าน `save_processed_run`)
+
+---
+
+## ความต้องการของระบบ
+
+- **Python 3.11+**
+- **Node.js 18+** และ npm
+- **MongoDB** (รันเองหรือผ่าน Docker)
+- **Docker Desktop** (ถ้าใช้ Docker Compose ทั้งสแตก)
+
+---
+
+## รันแบบพัฒนาในเครื่อง (Localhost)
+
+### 1) MongoDB
+
+ตัวอย่างรัน MongoDB ด้วย Docker:
+
+```bash
+docker run -d -p 27017:27017 \
+  -e MONGO_INITDB_ROOT_USERNAME=flight_admin \
+  -e MONGO_INITDB_ROOT_PASSWORD=flight_secret \
+  --name flight-mongodb \
+  mongo:latest
+```
+
+หรือใช้ `docker compose` จากโฟลเดอร์ `flight-app` (ดูด้านล่าง) เฉพาะบริการ `mongodb`
+
+### 2) Backend
 
 ```bash
 cd flight-app/backend
 python -m venv venv
-venv\Scripts\activate  # บน Windows
+
+# Windows (PowerShell / CMD)
+source venv/Scripts/activate
+
+# Linux / macOS
+source venv/bin/activate
+
 pip install -r requirements.txt
+```
+
+คัดลอกและแก้ไข environment (ถ้ามี):
+
+```bash
+copy .env.example .env
+# หรือ: cp .env.example .env
+```
+
+เริ่มเซิร์ฟเวอร์:
+
+```bash
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### วิธีรัน backend
-```bash
-# check directory ก่อนตลอดเด้อ ~/Desktop/Uni/SKATS/skats/
-cd flight-app/backend
+- API: [http://localhost:8000](http://localhost:8000)
+- เอกสาร Swagger: [http://localhost:8000/docs](http://localhost:8000/docs)
 
-# เพื่อ setup environment python ให้สามารถหา library เจอได้
-source venv/Scripts/activate 
-
-# run project
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-API จะอยู่ที่ `http://localhost:8000`
-
-### Pipeline API (ADS-B + SQLite) – สำหรับ Frontend prototype
-Frontend ใหม่ใช้ **Pipeline API** ที่รัน `process_adsb_pipeline.py` และเก็บผลใน SQLite:
-
-```bash
-cd flight-app/backend
-source venv/Scripts/activate   # หรือ venv\Scripts\activate บน Windows
-uvicorn api.app:app --reload --host 0.0.0.0 --port 8000
-```
-
-- **POST /calculate** – อัปโหลด CSV + `aircraft_type` → รัน pipeline → คืนค่า `run_id`
-- **GET /summary/{run_id}**, **/track/{run_id}**, **/segments/{run_id}** – ดึงผลจาก SQLite
-- **GET /download/csv/{run_id}** – ดาวน์โหลดไฟล์ output CSV จาก pipeline
-
-Database: `backend/flights.db` (SQLite)
-
-### API Spec – POST `/upload` (simple calculator)
-
-- **URL**: `/upload`
-- **Method**: `POST`
-- **Content-Type**: `multipart/form-data`
-- **Field**: `file` (CSV)
-
-**CSV columns ที่ต้องมี**
-
-- `lat` – latitude (decimal degrees)
-- `lon` – longitude (decimal degrees)
-- `altitude` – altitude (ไม่ถูกใช้ในการคำนวณตอนนี้ แต่ต้องมี)
-- `timestamp` – เวลา (อ่านด้วย `pandas.to_datetime`)
-
-**ตัวอย่าง cURL**
-
-```bash
-curl -X POST "http://localhost:8000/upload" ^
-  -H "accept: application/json" ^
-  -H "Content-Type: multipart/form-data" ^
-  -F "file=@flight.csv;type=text/csv"
-```
-
-**ตัวอย่างผลลัพธ์ JSON**
-
-```json
-{
-  "distance_nm": 523.417,
-  "fuel_kg": 2198.351,
-  "mass_kg": 2308.269,
-  "co2_kg": 6947.827
-}
-```
-
----
-
-## ตัวอย่าง CSV Format
-
-ตัวอย่างไฟล์ `flight.csv`:
-
-```csv
-lat,lon,altitude,timestamp
-13.9125,100.6067,500,2024-08-01T10:00:00Z
-14.1000,100.8000,10000,2024-08-01T10:15:00Z
-15.0000,101.5000,32000,2024-08-01T11:00:00Z
-16.0000,102.5000,34000,2024-08-01T11:45:00Z
-```
-
----
-
-## Frontend (Next.js + Tailwind + Leaflet)
-
-### ติดตั้ง dependencies
+### 3) Frontend
 
 ```bash
 cd flight-app/frontend
 npm install
-```
-
-### ตั้งค่าเชื่อม backend (ถ้า backend ไม่ใช่ localhost:8000)
-
-สร้างไฟล์ `.env.local` ในโฟลเดอร์ `frontend`:
-
-```env
-NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
-```
-
-### รัน development server
-
-```bash
+copy .env.local.example .env.local
+# ตั้งค่า NEXT_PUBLIC_API_URL=http://localhost:8000 (ค่าเริ่มต้นในไฟล์ตัวอย่างมักชี้ไปที่นี่แล้ว)
 npm run dev
 ```
 
-เปิดเบราว์เซอร์ที่ `http://localhost:3000`
-
-### หน้า `index.js`
-
-- **UploadForm**: ฟอร์มอัปโหลด CSV ไปยัง backend `/upload`
-- **ResultsCard**: แสดงผล distance, fuel, mass, CO₂
-- **Map**: แผนที่ Leaflet แสดง polyline จากคอลัมน์ `lat` / `lon` ของ CSV
-- **Layout**: โครงหน้าเว็บพร้อมปุ่มสลับ **dark/light mode**
+เปิดเบราว์เซอร์: [http://localhost:3000](http://localhost:3000)
 
 ---
 
-## n8n Workflow
+## รันด้วย Docker Compose
 
-ในโฟลเดอร์ `n8n/` มีไฟล์:
-
-- `workflow-flight-upload.json` – n8n workflow export
-
-Workflow นี้จะ:
-
-1. รับ Webhook ที่ path `/upload` (ภายใน n8n)  
-2. ส่งไฟล์ CSV ไปยัง backend `/upload` (service ชื่อ `backend` ใน Docker network)  
-3. เก็บผลลัพธ์ลงฐานข้อมูล Postgres (ต้องตั้งค่า credentials ใน UI)  
-4. ส่งอีเมลแจ้งผล (ต้องตั้งค่า SMTP ใน UI)  
-
-### วิธี import workflow
-
-1. เปิด UI ของ n8n (เช่น `http://localhost:5678`)  
-2. เลือกเมนู **Import from File**  
-3. เลือกไฟล์ `n8n/workflow-flight-upload.json`  
-4. ปรับ credentials ของ Postgres / SMTP ตามสภาพแวดล้อมของคุณ  
-
----
-
-## Docker Compose
-
-ไฟล์ `docker-compose.yaml` จะรัน:
-
-- **backend** – FastAPI service ที่ port `8000`
-- **n8n** – n8n automation ที่ port `5678`
-- ทั้งสอง service อยู่ใน network: `flight-net`
-- volume `n8n_data` ใช้เพื่อ **persist ข้อมูล n8n**
-
-### รันทั้งหมดด้วย Docker
+จากโฟลเดอร์ `flight-app`:
 
 ```bash
 cd flight-app
-docker-compose up -d
+docker compose up -d
 ```
 
-แล้วคุณจะได้:
+บริการที่ได้:
 
-- Backend API: `http://localhost:8000`
-- n8n UI: `http://localhost:5678`
 
-> หมายเหตุ: frontend (Next.js) แนะนำให้ deploy แยกต่างหาก (เช่น Vercel) หรือรันด้วย `npm run dev`/`npm run start` ภายนอก compose
+| บริการ            | พอร์ต | คำอธิบาย                                                |
+| ----------------- | ----- | ------------------------------------------------------- |
+| **frontend**      | 3000  | UI Next.js                                              |
+| **backend**       | 8000  | FastAPI (`main:app`)                                    |
+| **mongodb**       | 27017 | ฐานข้อมูล                                               |
+| **mongo-express** | 8081  | ดูข้อมูล Mongo ผ่านเว็บ (username/password ตาม compose) |
 
----
 
-## Deployment Guide (Vercel + Render ฟรี)
+หยุดบริการ:
 
-### Backend (Render.com – ฟรี tier)
+```bash
+docker compose down
+```
 
-1. Push โค้ดไป GitHub (รวมทั้งโฟลเดอร์ `backend/`)  
-2. สร้าง **Web Service** ใหม่ใน Render  
-3. เลือก repo และ branch  
-4. Root directory: `backend`  
-5. Build command:
-
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-6. Start command:
-
-   ```bash
-   uvicorn main:app --host 0.0.0.0 --port 8000
-   ```
-
-7. Deploy แล้วจด **URL** ที่ Render ให้ เช่น `https://flight-backend.onrender.com`  
-
-### Frontend (Vercel)
-
-1. Push โค้ดไป GitHub (รวม `frontend/`)  
-2. สร้างโปรเจคใหม่ใน Vercel  
-3. เลือก repo และตั้งค่า:
-   - Root directory: `frontend`
-   - Framework: `Next.js`
-4. ตั้งค่า Environment Variable:
-
-   - `NEXT_PUBLIC_BACKEND_URL=https://flight-backend.onrender.com`
-
-5. Deploy และเปิด URL ของ Vercel ที่สร้างให้
+หมายเหตุ: Frontend ใน container ใช้ `NEXT_PUBLIC_API_URL=http://localhost:8000` — ฝั่งเบราว์เซอร์ของคุณเรียก API ที่เครื่อง host; ถ้า deploy จริงควรชี้ URL ของ API ที่เข้าถึงได้จาก client
 
 ---
 
-## Summary
+## ตัวแปรสภาพแวดล้อม
 
-- **Backend**: FastAPI endpoint `/upload` คำนวณ distance, fuel, mass, CO₂ จาก FlightRadar24 CSV  
-- **Frontend**: Next.js + Tailwind + Leaflet แสดงผลและเส้นทางการบิน  
-- **n8n**: Workflow ตัวอย่าง สำหรับ webhook → เรียก backend → บันทึก DB → ส่งอีเมล  
-- **Docker Compose**: รัน backend + n8n บน network `flight-net` พร้อม volume persist  
+### Backend (`backend/.env` หรือตัวแปรใน shell)
 
 
+| ตัวแปร      | คำอธิบาย                                                                                  |
+| ----------- | ----------------------------------------------------------------------------------------- |
+| `MONGO_URI` | URI เชื่อม MongoDB (ค่าเริ่มต้นในโค้ดชี้ `flight_admin` / `flight_secret` / `flight_app`) |
+| `MONGO_DB`  | ชื่อฐานข้อมูล                                                                             |
+
+
+### Frontend (`frontend/.env.local`)
+
+
+| ตัวแปร                | คำอธิบาย                                       |
+| --------------------- | ---------------------------------------------- |
+| `NEXT_PUBLIC_API_URL` | URL ของ FastAPI (เช่น `http://localhost:8000`) |
+
+
+---
+
+## รูปแบบไฟล์ CSV ที่รองรับ
+
+หน้าอัปโหลดตรวจสอบว่ามีหัวคอลัมน์ (ไม่สนตัวพิมพ์เล็กใหญ่) ดังนี้:
+
+- `Timestamp`
+- `UTC`
+- `Callsign`
+- `Position`
+- `Altitude`
+- `Speed`
+- `Direction`
+
+ไฟล์ต้องเป็น `.csv` ข้อมูลใช้ในการประมวลผลต่อใน `preprocessing` และ `process_adsb_pipeline` ตามที่กำหนดในโปรเจกต์
+
+---
+
+## โครงสร้างโปรเจกต์
+
+```
+flight-app/
+├── backend/
+│   ├── main.py                 # FastAPI หลัก — /upload, /runs, SSE, chart-data, export
+│   ├── api/
+│   │   └── app.py              # FastAPI ทางเลือก — /calculate, รันสายไปป์ subprocess
+│   ├── db/
+│   │   └── mongo.py            # MongoDB, segments, route_info, flight_date, ฯลฯ
+│   ├── flight_phase.py         # ตรวจจับเฟสการบิน
+│   ├── preprocessing.py      # ก่อนประมวลผลหลัก
+│   ├── process_adsb_pipeline.py
+│   ├── requirements.txt
+│   ├── Dockerfile
+│   └── .env.example
+├── frontend/
+│   ├── app/                    # Next.js App Router (page, result, layout)
+│   ├── components/             # Navbar, UploadZone, FlightMap, FlightChart, ฯลฯ
+│   ├── lib/                    # api.ts, formatters
+│   ├── package.json
+│   ├── Dockerfile
+│   └── .env.local.example
+├── docker-compose.yaml
+└── README.md
+```
+
+---
+
+## API หลัก (Backend)
+
+เอกสารแบบโต้ตอบ: `**GET /docs**` (Swagger)
+
+
+| Method | Endpoint                    | คำอธิบาย                                                                            |
+| ------ | --------------------------- | ----------------------------------------------------------------------------------- |
+| GET    | `/`                         | ข้อความทดสอบว่า backend ทำงาน                                                       |
+| POST   | `/upload`                   | อัปโหลด CSV + `aircraft_type` — คืน `run_id` ทันที ประมวลผลในเธรด                   |
+| GET    | `/health`                   | สุขภาพแอป                                                                           |
+| GET    | `/health/db`                | สุขภาพการเชื่อม MongoDB                                                             |
+| GET    | `/runs`                     | รายการรันทั้งหมด (สรุปย่อ)                                                          |
+| GET    | `/runs/{run_id}`            | รายละเอียดรันครบ (segments, track_points, data_quality, route_info, flight_date, …) |
+| DELETE | `/runs/{run_id}`            | ลบรันและแถว output ที่เกี่ยวข้อง                                                    |
+| GET    | `/runs/{run_id}/chart-data` | ข้อมูลสำหรับกราฟ (เวลา, ความสูง, ความเร็ว, น้ำหนัก, เชื้อเพลิง, CO₂)                |
+| GET    | `/runs/{run_id}/export`     | ดาวน์โหลด CSV ผลลัพธ์                                                               |
+| GET    | `/runs/{run_id}/progress`   | **Server-Sent Events** — ความคืบหน้าขั้นตอนประมวลผล                                 |
+
+
+### API ทางเลือก (`backend/api/app.py`)
+
+เมื่อรันแอปจาก `api/app.py` จะมีเส้นทางเช่น `**POST /calculate`** สำหรับอัปโหลดแล้วรัน `process_adsb_pipeline.py` แยกต่างหาก — ใช้เมื่อโครงสร้าง deploy แยก service
+
+---
+
+## การแก้ปัญหาเบื้องต้น
+
+1. **เชื่อม MongoDB ไม่ได้** — ตรวจว่า Mongo รันที่พอร์ต 27017 และ `MONGO_URI` / user-password ตรงกับ `docker-compose` หรือคอนเทนเนอร์ที่ใช้
+2. **Frontend เรียก API ไม่ถึง** — ตรวจ `NEXT_PUBLIC_API_URL` และ CORS (backend ตั้ง `allow_origins` แบบเปิดกว้างในโค้ดปัจจุบัน)
+3. **อัปโหลดแล้วค้าง** — ดู log ของ `uvicorn` และขั้นตอนใน SSE; สายไปป์อาจใช้เวลานาน (ลม ERA5 ฯลฯ ตามการตั้งค่าใน `process_adsb_pipeline`)
+4. **Route header ไม่แสดงเมือง/สนามบิน** — การค้นหาสนามบินใช้บริการภายนอก (Overpass / Nominatim) หาก API ช้าหรือบล็อก อาจได้ข้อมูลว่าง; การบันทึกรันยังทำงานต่อได้
+5. **Docker: frontend ไม่เห็น backend** — จากเบราว์เซอร์บนเครื่องคุณ ยังคงใช้ `localhost:8000` เป็นปกติ; ถ้าเรียกจาก container อื่นต้องใช้ชื่อ service / URL ภายใน network
+
+---
+
+## ใบอนุญาตและการมีส่วนร่วม
+
+โปรเจกต์เป็นส่วนหนึ่งของ workspace **TKAS** — ปรับแต่ง README / โค้ดตามนโยบายทีมของคุณ
+
+หากพัฒนาต่อ แนะนำให้รัน `npm run lint` ใน frontend และทดสอบ `/upload` + หน้า `/result?run_id=...` หลังแก้ backend
+
+---
+
+*อัปเดต README ฉบับภาษาไทย — สอดคล้องกับโครงสร้าง `flight-app` ปัจจุบัน*
