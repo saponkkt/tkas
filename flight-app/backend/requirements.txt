@@ -7,5 +7,8 @@ starlette
 streamlit
 xarray
 cdsapi
-
+pymongo
+scipy
+netcdf4
+h5netcdf
 
