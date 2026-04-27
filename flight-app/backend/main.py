@@ -49,10 +49,15 @@ def _run_pipeline_background(
     output_path: str,
     aircraft_type: str | None,
 ) -> None:
+    preprocessed_path = tmp_input_path.replace(".csv", "_preprocessed.csv")
     try:
         original_phases = get_original_phases(tmp_input_path)
 
         preprocessing(tmp_input_path, aircraft_type=aircraft_type or "737")
+        if not os.path.exists(preprocessed_path):
+            raise RuntimeError(
+                "Preprocessing did not produce output CSV; pipeline halted."
+            )
 
         update_progress(run_id, "cleaning", 12, "Cleaning data...")
         time.sleep(1.0)
@@ -60,19 +65,7 @@ def _run_pipeline_background(
         update_progress(run_id, "resampling", 22, "Resampling data...")
         time.sleep(1.0)
 
-        preprocessed_path = tmp_input_path.replace(".csv", "_preprocessed.csv")
         input_for_pipeline = preprocessed_path
-        if not os.path.exists(preprocessed_path):
-            # preprocessing.py is defensive and may swallow errors; don't let that
-            # crash the pipeline by referencing a missing file.
-            input_for_pipeline = tmp_input_path
-            update_progress(
-                run_id,
-                "generating",
-                32,
-                "Preprocessing output missing; continuing with original CSV...",
-            )
-
         update_progress(run_id, "generating", 30, "Generating missing data...")
         time.sleep(1.2)
 
@@ -80,11 +73,11 @@ def _run_pipeline_background(
         time.sleep(1.0)
 
         update_progress(run_id, "wind", 46, "Fetching wind data...")
-        # Derive lat/lon/time-range from (preprocessed) input and cache wind data.
+        # Derive lat/lon/time-range from original uploaded input and cache wind data.
         # Non-fatal: if it fails, we continue and downstream can still use its own sources (GFS/ERA5).
         try:
-            if os.path.exists(input_for_pipeline):
-                ensure_open_meteo_wind_cache_for_csv(input_for_pipeline, run_id=run_id)
+            if os.path.exists(tmp_input_path):
+                ensure_open_meteo_wind_cache_for_csv(tmp_input_path, run_id=run_id)
         except Exception as _exc:
             pass
         time.sleep(1.2)
@@ -94,7 +87,13 @@ def _run_pipeline_background(
             output_path=str(output_path),
             compute_tas=True,
             aircraft_type=aircraft_type,
+            input_time_source_path=tmp_input_path,
         )
+
+        if not os.path.exists(output_path):
+            raise RuntimeError(
+                "ADS-B pipeline did not produce output CSV; cannot save run."
+            )
 
         update_progress(run_id, "tas", 56, "Calculating True Airspeed...")
         time.sleep(1.0)

@@ -78,6 +78,49 @@ def _to_mongo_value(value: Any) -> Any:
     return value
 
 
+def _safe_remove_file(path: str | None) -> None:
+    if not path:
+        return
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
+
+
+def _prune_runs_and_temp_files(db: Database, keep_run_id: str | None = None) -> None:
+    """Keep only one run in DB and delete files of removed runs."""
+    query: dict[str, Any] = {}
+    if keep_run_id:
+        query = {"run_id": {"$ne": keep_run_id}}
+
+    old_runs = list(
+        db.flight_runs.find(
+            query,
+            {"_id": 1, "run_id": 1, "input_file": 1, "output_file": 1, "output_csv_path": 1},
+        )
+    )
+
+    old_run_ids: list[str] = []
+    old_obj_ids: list[ObjectId] = []
+    for doc in old_runs:
+        rid = str(doc.get("run_id", "")).strip()
+        if rid:
+            old_run_ids.append(rid)
+        obj_id = doc.get("_id")
+        if isinstance(obj_id, ObjectId):
+            old_obj_ids.append(obj_id)
+
+        _safe_remove_file(doc.get("input_file"))
+        _safe_remove_file(doc.get("output_file"))
+        _safe_remove_file(doc.get("output_csv_path"))
+
+    if old_obj_ids:
+        db.flight_runs.delete_many({"_id": {"$in": old_obj_ids}})
+    if old_run_ids:
+        db.flight_output_rows.delete_many({"run_id": {"$in": old_run_ids}})
+
+
 def _build_confidence_detail(data_quality: dict[str, Any], total_rows: int) -> str:
     parts: list[str] = []
     phases_found = data_quality.get("phases_found", 0)
@@ -686,8 +729,6 @@ def save_processed_run(
                 "co2_kg": round(seg_co2, 2),
             })
 
-    db.flight_runs.delete_many({})
-
     doc = {
         "input_file": input_file,
         "output_file": output_file,
@@ -746,6 +787,7 @@ def save_processed_run(
         {"_id": run_result.inserted_id},
         {"$set": {"run_id": final_run_id, "inserted_rows": inserted_rows}},
     )
+    _prune_runs_and_temp_files(db, keep_run_id=final_run_id)
     return final_run_id
 
 
@@ -918,6 +960,7 @@ def insert_run_from_parsed(
         "flight_date": flight_date,
     }
     db.flight_runs.insert_one(doc)
+    _prune_runs_and_temp_files(db, keep_run_id=run_id)
     return run_id
 
 

@@ -79,7 +79,8 @@ def _preprocess_adsb_data(df):
     df = df.set_index('UTC_datetime')
     df = df[~df.index.duplicated(keep='first')]
 
-    df_resampled = df.resample('1S').asfreq()
+    # Pandas 2.x expects lower-case offset aliases (e.g. "1s").
+    df_resampled = df.resample('1s').asfreq()
 
     pos_cols = [c for c in ['Latitude', 'Longitude'] if c in df_resampled.columns]
     dir_col = 'Direction' if 'Direction' in df_resampled.columns else ('Heading' if 'Heading' in df_resampled.columns else None)

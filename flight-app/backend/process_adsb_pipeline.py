@@ -63,7 +63,13 @@ import importlib.util
 
 print("Script loaded")
 
-def _process_file(input_path: str, output_path: str, compute_tas: bool = True, aircraft_type: Optional[str] = None) -> None:
+def _process_file(
+    input_path: str,
+    output_path: str,
+    compute_tas: bool = True,
+    aircraft_type: Optional[str] = None,
+    input_time_source_path: Optional[str] = None,
+) -> None:
     """Process a single CSV file and write output CSV."""
     df = pd.read_csv(input_path)
 
@@ -120,7 +126,8 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
     if compute_tas:
         try:
             t0 = time.time()
-            df_new = compute_tas_for_dataframe(df, input_csv=input_path)
+            wind_time_source = input_time_source_path or input_path
+            df_new = compute_tas_for_dataframe(df, input_csv=wind_time_source)
             t1 = time.time()
             print(f"Timing: compute_tas_for_dataframe took {t1-t0:.2f}s")
             if len(df_new) == 0:
@@ -545,7 +552,13 @@ def _process_file(input_path: str, output_path: str, compute_tas: bool = True, a
         print(f"Warning: could not add summary rows: {e}")
 
 
-def process(input_path: str, output_path: str, compute_tas: bool = True, aircraft_type: Optional[str] = None) -> None:
+def process(
+    input_path: str,
+    output_path: str,
+    compute_tas: bool = True,
+    aircraft_type: Optional[str] = None,
+    input_time_source_path: Optional[str] = None,
+) -> None:
     """Process either a single CSV file or all CSVs in an input directory.
 
     If `input_path` is a directory, `output_path` must be a directory. Each
@@ -572,12 +585,24 @@ def process(input_path: str, output_path: str, compute_tas: bool = True, aircraf
             dest = out_path / fname
             print(f"Processing {fname} -> {dest}")
             try:
-                _process_file(f, str(dest), compute_tas=compute_tas, aircraft_type=aircraft_type)
+                _process_file(
+                    f,
+                    str(dest),
+                    compute_tas=compute_tas,
+                    aircraft_type=aircraft_type,
+                    input_time_source_path=input_time_source_path,
+                )
             except Exception as e:
                 print(f"Failed to process {fname}: {e}")
     else:
         # single file
-        _process_file(str(in_path), str(out_path), compute_tas=compute_tas, aircraft_type=aircraft_type)
+        _process_file(
+            str(in_path),
+            str(out_path),
+            compute_tas=compute_tas,
+            aircraft_type=aircraft_type,
+            input_time_source_path=input_time_source_path,
+        )
 
 
 def main(argv: Optional[list] = None) -> int:

@@ -200,6 +200,49 @@ def _normalize_input_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _extract_flight_time_from_input_csv(input_csv: str | None) -> pd.Timestamp | None:
+    """Read first valid flight datetime from original input CSV.
+
+    Priority:
+    - `UTC` / `utc` / `utc_time` ISO values
+    - numeric `Timestamp` / `timestamp` / `time` epoch (ms or s)
+    """
+    if not input_csv:
+        return None
+    try:
+        src = pd.read_csv(input_csv)
+    except Exception:
+        return None
+    if src.empty:
+        return None
+
+    lower_cols = {c.lower(): c for c in src.columns}
+
+    # Prefer explicit UTC strings from the input file.
+    for candidate in ("utc", "utc_time"):
+        real = lower_cols.get(candidate)
+        if real:
+            dt = pd.to_datetime(src[real], errors="coerce", utc=True)
+            dt = dt.dropna()
+            if not dt.empty:
+                return dt.iloc[0]
+
+    # Fallback to epoch columns.
+    for candidate in ("timestamp", "time", "ts"):
+        real = lower_cols.get(candidate)
+        if real:
+            num = pd.to_numeric(src[real], errors="coerce").dropna()
+            if num.empty:
+                continue
+            first = float(num.iloc[0])
+            unit = "ms" if abs(first) > 1e12 else "s"
+            try:
+                return pd.to_datetime(first, unit=unit, utc=True)
+            except Exception:
+                continue
+    return None
+
+
 def compute_tas_for_dataframe(df: pd.DataFrame, prefer_gfs: bool = True, input_csv: str | None = None) -> pd.DataFrame:
     """Compute wind/TAS for each row of `df` and return DataFrame with exact columns.
 
@@ -211,7 +254,9 @@ def compute_tas_for_dataframe(df: pd.DataFrame, prefer_gfs: bool = True, input_c
     if df.empty:
         return df
 
-    flight_time = pd.to_datetime(df["time"].iloc[0], unit="s", utc=True)
+    flight_time = _extract_flight_time_from_input_csv(input_csv)
+    if flight_time is None:
+        flight_time = pd.to_datetime(df["time"].iloc[0], unit="s", utc=True)
     now_utc = pd.Timestamp.now(tz="UTC")
     use_era5 = (now_utc - flight_time).days > USE_ERA5_IF_OLDER_THAN_DAYS
 
@@ -238,6 +283,7 @@ def compute_tas_for_dataframe(df: pd.DataFrame, prefer_gfs: bool = True, input_c
     if use_era5 and ds is None:
         try:
             import cdsapi  # type: ignore
+            c = None
             era5_dir = Path(os.getenv("ERA5_DATA_DIR") or os.getenv("WEATHER_DATA_DIR") or "/app/data") / "era5"
             era5_dir.mkdir(parents=True, exist_ok=True)
             date_key = flight_time.strftime("%Y%m%d")
@@ -378,6 +424,10 @@ def compute_tas_for_dataframe(df: pd.DataFrame, prefer_gfs: bool = True, input_c
                             pass
                         try:
                             # retry retrieve
+                            if c is None:
+                                cds_url = os.getenv("CDSAPI_URL", CDSAPI_URL)
+                                cds_key = _sanitize_cds_key(os.getenv("CDSAPI_KEY", CDSAPI_KEY))
+                                c = cdsapi.Client(url=cds_url, key=cds_key)
                             c.retrieve(
                                 "reanalysis-era5-pressure-levels",
                                 {
@@ -410,6 +460,7 @@ def compute_tas_for_dataframe(df: pd.DataFrame, prefer_gfs: bool = True, input_c
             # fallback to single-level
             try:
                 import cdsapi  # type: ignore
+                c = None
                 era5_dir = Path(os.getenv("ERA5_DATA_DIR") or os.getenv("WEATHER_DATA_DIR") or "/app/data") / "era5"
                 era5_dir.mkdir(parents=True, exist_ok=True)
                 date_key = flight_time.strftime("%Y%m%d")
@@ -498,6 +549,10 @@ def compute_tas_for_dataframe(df: pd.DataFrame, prefer_gfs: bool = True, input_c
                             except Exception:
                                 pass
                             try:
+                                if c is None:
+                                    cds_url = os.getenv("CDSAPI_URL", CDSAPI_URL)
+                                    cds_key = _sanitize_cds_key(os.getenv("CDSAPI_KEY", CDSAPI_KEY))
+                                    c = cdsapi.Client(url=cds_url, key=cds_key)
                                 c.retrieve(
                                     "reanalysis-era5-single-levels",
                                     {
