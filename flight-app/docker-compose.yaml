@@ -44,21 +44,56 @@ services:
     environment:
       MONGO_URI: mongodb://flight_admin:flight_secret@mongodb:27017/flight_app?authSource=admin
       MONGO_DB: flight_app
+      # --- Long-running processing / SSE ---
+      # Set to 0 to disable app-level SSE timeout
+      RUN_PROGRESS_TIMEOUT_S: ${RUN_PROGRESS_TIMEOUT_S:-7200}
+      RUN_PROGRESS_HEARTBEAT_S: ${RUN_PROGRESS_HEARTBEAT_S:-15}
+
+      # --- Weather / wind cache (Open-Meteo) ---
+      WEATHER_DATA_DIR: ${WEATHER_DATA_DIR:-/app/data}
+      # Set to 0 to disable request timeout (wait indefinitely)
+      OPEN_METEO_TIMEOUT_S: ${OPEN_METEO_TIMEOUT_S:-0}
+      WEATHER_DOWNLOAD_TIMEOUT_S: ${WEATHER_DOWNLOAD_TIMEOUT_S:-0}
+      # NOTE: lat/lon/time range is derived from each uploaded CSV (per-run),
+      # so we do not configure a fixed location here.
+
+      # --- ERA5 related (used by multi_tas.py) ---
+      ERA5_TIMEOUT_S: ${ERA5_TIMEOUT_S:-1800}
+
+      # --- Uvicorn runtime tuning ---
+      UVICORN_HOST: ${UVICORN_HOST:-0.0.0.0}
+      UVICORN_PORT: ${UVICORN_PORT:-8000}
+      # Uvicorn doesn't support "infinite" here; set very large if needed.
+      UVICORN_TIMEOUT_KEEP_ALIVE_S: ${UVICORN_TIMEOUT_KEEP_ALIVE_S:-600}
+      UVICORN_GRACEFUL_TIMEOUT_S: ${UVICORN_GRACEFUL_TIMEOUT_S:-600}
     depends_on:
       mongodb:
         condition: service_healthy
     networks:
       - flight-net
-    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    volumes:
+      - era5_data:/app/data
+    command: python startup.py
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+        NEXT_PUBLIC_PROCESSING_TIMEOUT_MS: ${NEXT_PUBLIC_PROCESSING_TIMEOUT_MS:-0}
+        NEXT_PUBLIC_RESULT_WAIT_MS: ${NEXT_PUBLIC_RESULT_WAIT_MS:-0}
+        NEXT_PUBLIC_CHART_WAIT_MS: ${NEXT_PUBLIC_CHART_WAIT_MS:-0}
     container_name: flight-frontend
     restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
+      # Runtime env (also used for local dev); build-time values are passed via build.args above
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      # Set to 0 to disable app-level timeout (wait indefinitely)
+      NEXT_PUBLIC_PROCESSING_TIMEOUT_MS: ${NEXT_PUBLIC_PROCESSING_TIMEOUT_MS:-0}
+      NEXT_PUBLIC_RESULT_WAIT_MS: ${NEXT_PUBLIC_RESULT_WAIT_MS:-0}
+      NEXT_PUBLIC_CHART_WAIT_MS: ${NEXT_PUBLIC_CHART_WAIT_MS:-0}
     depends_on:
       - backend
     networks:
@@ -70,4 +105,6 @@ networks:
 
 volumes:
   mongodb_data:
+    driver: local
+  era5_data:
     driver: local

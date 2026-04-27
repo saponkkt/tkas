@@ -4,6 +4,11 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const PROCESSING_TIMEOUT_MS = Number.parseInt(
+  // 0 = wait indefinitely (no app-level timeout)
+  process.env.NEXT_PUBLIC_PROCESSING_TIMEOUT_MS || '0',
+  10
+);
 
 const STEP_MAP: Record<string, number> = {
   uploading: -1,
@@ -140,7 +145,11 @@ export default function ProcessingView({ runId, onTimeout, onError }: Processing
         // ignore
       }
     };
-    es.onerror = () => es.close();
+    // Don't close on transient network/proxy errors; EventSource will auto-reconnect.
+    // We'll rely on the overall timeout to fail gracefully.
+    es.onerror = () => {
+      setMessage((m) => m || 'Connection hiccup… still working.');
+    };
     return () => es.close();
   }, [runId, onError]);
 
@@ -154,11 +163,15 @@ export default function ProcessingView({ runId, onTimeout, onError }: Processing
   }, [complete, runId, router]);
 
   useEffect(() => {
+    // Allow disabling app-level timeout by setting NEXT_PUBLIC_PROCESSING_TIMEOUT_MS=0
+    if (Number.isFinite(PROCESSING_TIMEOUT_MS) && PROCESSING_TIMEOUT_MS === 0) return;
+    const ms =
+      Number.isFinite(PROCESSING_TIMEOUT_MS) && PROCESSING_TIMEOUT_MS > 0
+        ? PROCESSING_TIMEOUT_MS
+        : 1200000;
     const timeout = setTimeout(() => {
-      if (!complete) {
-        onTimeout?.();
-      }
-    }, 120000);
+      if (!complete) onTimeout?.();
+    }, ms);
     return () => clearTimeout(timeout);
   }, [complete, onTimeout]);
 

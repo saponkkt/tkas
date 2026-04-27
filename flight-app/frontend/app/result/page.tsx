@@ -18,6 +18,16 @@ const FlightChart = dynamic(() => import('@/components/FlightChart'), {
   ssr: false,
 });
 
+// 0 = wait indefinitely (no app-level timeout)
+const RESULT_WAIT_MS = Number.parseInt(process.env.NEXT_PUBLIC_RESULT_WAIT_MS || '0', 10);
+// 0 = wait indefinitely (no app-level timeout)
+const CHART_WAIT_MS = Number.parseInt(process.env.NEXT_PUBLIC_CHART_WAIT_MS || '0', 10);
+const POLL_INTERVAL_MS = 2000;
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function ResultContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -32,15 +42,65 @@ function ResultContent() {
       router.push('/');
       return;
     }
-    getRun(runId)
-      .then(setRun)
-      .catch(() => router.push('/'))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    setLoading(true);
+    setRun(null);
+    setChartData(null);
+
+    const deadline =
+      Number.isFinite(RESULT_WAIT_MS) && RESULT_WAIT_MS > 0
+        ? Date.now() + RESULT_WAIT_MS
+        : null;
+
+    (async () => {
+      while (!cancelled) {
+        try {
+          const r = await getRun(runId);
+          if (cancelled) return;
+          setRun(r);
+          return;
+        } catch {
+          if (deadline != null && Date.now() >= deadline) return;
+          await sleep(POLL_INTERVAL_MS);
+        }
+      }
+    })()
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [runId, router]);
 
   useEffect(() => {
     if (!runId || !run) return;
-    getChartData(runId).then(setChartData).catch(() => setChartData(null));
+    let cancelled = false;
+    setChartData(null);
+
+    const deadline =
+      Number.isFinite(CHART_WAIT_MS) && CHART_WAIT_MS > 0
+        ? Date.now() + CHART_WAIT_MS
+        : null;
+
+    (async () => {
+      while (!cancelled) {
+        try {
+          const d = await getChartData(runId);
+          if (cancelled) return;
+          setChartData(d);
+          return;
+        } catch {
+          if (deadline != null && Date.now() >= deadline) return;
+          await sleep(POLL_INTERVAL_MS);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [runId, run]);
 
   const handleExport = () => {
@@ -59,7 +119,21 @@ function ResultContent() {
   }
 
   if (!run) {
-    return null;
+    return (
+      <div className="max-w-2xl mx-auto px-4 py-16 text-center space-y-4">
+        <h2 className="text-lg font-semibold text-gray-900">Still processing…</h2>
+        <p className="text-sm text-gray-600">
+          This run is taking longer than usual. Please keep this page open; it will load
+          automatically when ready.
+        </p>
+        <Link
+          href="/"
+          className="inline-flex items-center px-4 py-2 border border-blue-600 text-blue-600 font-medium rounded-lg hover:bg-blue-50 transition-colors"
+        >
+          Back to upload
+        </Link>
+      </div>
+    );
   }
 
   const {

@@ -2,6 +2,7 @@ import os
 import math
 import time
 import warnings
+from pathlib import Path
 from typing import Tuple
 
 import pandas as pd
@@ -237,7 +238,11 @@ def compute_tas_for_dataframe(df: pd.DataFrame, prefer_gfs: bool = True, input_c
     if use_era5 and ds is None:
         try:
             import cdsapi  # type: ignore
-            out_nc = f"era5_pressure_{flight_time.strftime('%Y%m%d')}.nc"
+            era5_dir = Path(os.getenv("ERA5_DATA_DIR") or os.getenv("WEATHER_DATA_DIR") or "/app/data") / "era5"
+            era5_dir.mkdir(parents=True, exist_ok=True)
+            date_key = flight_time.strftime("%Y%m%d")
+            out_nc = str(era5_dir / f"era5_pressure_{date_key}.nc")
+            lock_path = str(era5_dir / f".era5_pressure_{date_key}.lock")
             if not os.path.exists(out_nc):
                 # Prefer using cdsapi.Client() which reads ~/.cdsapirc or env vars.
                 cds_url = os.getenv("CDSAPI_URL", CDSAPI_URL)
@@ -267,6 +272,19 @@ def compute_tas_for_dataframe(df: pd.DataFrame, prefer_gfs: bool = True, input_c
                         raise
 
                 try:
+                    # Very small cross-process lock to avoid duplicate downloads for same day.
+                    # If lock exists, wait a bit for the other worker to finish.
+                    if os.path.exists(lock_path):
+                        for _ in range(120):
+                            if os.path.exists(out_nc):
+                                break
+                            time.sleep(1)
+                    if not os.path.exists(out_nc):
+                        try:
+                            with open(lock_path, "w", encoding="utf-8") as _f:
+                                _f.write(str(time.time()))
+                        except Exception:
+                            pass
                     c.retrieve(
                         "reanalysis-era5-pressure-levels",
                         {
@@ -284,6 +302,12 @@ def compute_tas_for_dataframe(df: pd.DataFrame, prefer_gfs: bool = True, input_c
                 except Exception as e:
                     print("ERA5 pressure-level retrieve failed:", e)
                     print(traceback.format_exc())
+                finally:
+                    try:
+                        if os.path.exists(lock_path):
+                            os.remove(lock_path)
+                    except Exception:
+                        pass
             # attempt to open the downloaded file (if exists)
             try:
                 ds = xr.open_dataset(out_nc)
@@ -294,7 +318,7 @@ def compute_tas_for_dataframe(df: pd.DataFrame, prefer_gfs: bool = True, input_c
                 source = "era5"
                 # Also ensure single-level ERA5 file is available for temperature sampling.
                 ds_single = None
-                single_nc = f"era5_single_level_{flight_time.strftime('%Y%m%d')}.nc"
+                single_nc = str(era5_dir / f"era5_single_level_{date_key}.nc")
                 try:
                     if not os.path.exists(single_nc):
                         try:
@@ -386,7 +410,11 @@ def compute_tas_for_dataframe(df: pd.DataFrame, prefer_gfs: bool = True, input_c
             # fallback to single-level
             try:
                 import cdsapi  # type: ignore
-                out_nc = f"era5_single_level_{flight_time.strftime('%Y%m%d')}.nc"
+                era5_dir = Path(os.getenv("ERA5_DATA_DIR") or os.getenv("WEATHER_DATA_DIR") or "/app/data") / "era5"
+                era5_dir.mkdir(parents=True, exist_ok=True)
+                date_key = flight_time.strftime("%Y%m%d")
+                out_nc = str(era5_dir / f"era5_single_level_{date_key}.nc")
+                lock_path = str(era5_dir / f".era5_single_level_{date_key}.lock")
                 if not os.path.exists(out_nc):
                     cds_url = os.getenv("CDSAPI_URL", CDSAPI_URL)
                     cds_key = os.getenv("CDSAPI_KEY", CDSAPI_KEY)
@@ -412,6 +440,17 @@ def compute_tas_for_dataframe(df: pd.DataFrame, prefer_gfs: bool = True, input_c
                             raise
 
                     try:
+                        if os.path.exists(lock_path):
+                            for _ in range(120):
+                                if os.path.exists(out_nc):
+                                    break
+                                time.sleep(1)
+                        if not os.path.exists(out_nc):
+                            try:
+                                with open(lock_path, "w", encoding="utf-8") as _f:
+                                    _f.write(str(time.time()))
+                            except Exception:
+                                pass
                         c.retrieve(
                             "reanalysis-era5-single-levels",
                             {
@@ -428,6 +467,12 @@ def compute_tas_for_dataframe(df: pd.DataFrame, prefer_gfs: bool = True, input_c
                     except Exception as e:
                         print("ERA5 single-level retrieve failed:", e)
                         print(traceback.format_exc())
+                    finally:
+                        try:
+                            if os.path.exists(lock_path):
+                                os.remove(lock_path)
+                        except Exception:
+                            pass
                 try:
                     ds = xr.open_dataset(out_nc)
                     if "valid_time" in ds.dims and "time" not in ds.dims:

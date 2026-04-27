@@ -15,6 +15,7 @@ import time
 
 from process_adsb_pipeline import process
 from preprocessing import preprocessing
+from open_meteo_cache import ensure_open_meteo_wind_cache_for_csv
 from db.mongo import (
     connect_to_mongo,
     close_mongo_connection,
@@ -60,6 +61,17 @@ def _run_pipeline_background(
         time.sleep(1.0)
 
         preprocessed_path = tmp_input_path.replace(".csv", "_preprocessed.csv")
+        input_for_pipeline = preprocessed_path
+        if not os.path.exists(preprocessed_path):
+            # preprocessing.py is defensive and may swallow errors; don't let that
+            # crash the pipeline by referencing a missing file.
+            input_for_pipeline = tmp_input_path
+            update_progress(
+                run_id,
+                "generating",
+                32,
+                "Preprocessing output missing; continuing with original CSV...",
+            )
 
         update_progress(run_id, "generating", 30, "Generating missing data...")
         time.sleep(1.2)
@@ -68,10 +80,17 @@ def _run_pipeline_background(
         time.sleep(1.0)
 
         update_progress(run_id, "wind", 46, "Fetching wind data...")
+        # Derive lat/lon/time-range from (preprocessed) input and cache wind data.
+        # Non-fatal: if it fails, we continue and downstream can still use its own sources (GFS/ERA5).
+        try:
+            if os.path.exists(input_for_pipeline):
+                ensure_open_meteo_wind_cache_for_csv(input_for_pipeline, run_id=run_id)
+        except Exception as _exc:
+            pass
         time.sleep(1.2)
 
         process(
-            input_path=preprocessed_path,
+            input_path=input_for_pipeline,
             output_path=str(output_path),
             compute_tas=True,
             aircraft_type=aircraft_type,
@@ -161,9 +180,12 @@ async def upload_csv(
             tmp.write(content)
             tmp_input_path = tmp.name
 
-        output_dir = Path(__file__).parent.parent / "output"
+        # Keep outputs inside the app directory (in-container: /app/output),
+        # not at filesystem root (/output).
+        output_dir = Path(__file__).resolve().parent / "output"
         output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / "output.csv"
+        # Avoid collisions across concurrent runs
+        output_path = output_dir / f"output_{run_id}.csv"
 
         update_progress(run_id, "uploading", 5, "File received and validated")
 
@@ -354,15 +376,24 @@ async def export_run(run_id: str):
 async def run_progress(run_id: str):
     async def event_stream():
         start = time.monotonic()
-        timeout_s = 300
+        # 0 = wait indefinitely (no app-level timeout)
+        timeout_s = int(os.getenv("RUN_PROGRESS_TIMEOUT_S", "0"))
+        heartbeat_s = float(os.getenv("RUN_PROGRESS_HEARTBEAT_S", "15"))
         poll_interval = 0.5
         last_state = None
+        last_heartbeat = time.monotonic()
         try:
             while True:
                 elapsed = time.monotonic() - start
-                if elapsed > timeout_s:
+                # Allow disabling app-level SSE timeout by setting RUN_PROGRESS_TIMEOUT_S=0
+                if timeout_s > 0 and elapsed > timeout_s:
                     break
                 state = progress_store.get(run_id)
+                # Heartbeat to keep SSE connection alive even when state doesn't change.
+                now = time.monotonic()
+                if heartbeat_s > 0 and (now - last_heartbeat) >= heartbeat_s:
+                    yield ": ping\n\n"
+                    last_heartbeat = now
                 if state is not None:
                     if state.get("step") == "error":
                         error_data = json.dumps({
@@ -380,6 +411,7 @@ async def run_progress(run_id: str):
                     if state != last_state:
                         yield f"data: {data}\n\n"
                         last_state = dict(state)
+                        last_heartbeat = time.monotonic()
                     if state.get("done"):
                         break
                 else:
@@ -387,6 +419,7 @@ async def run_progress(run_id: str):
                     if last_state is None:
                         yield f"data: {json.dumps(pending)}\n\n"
                         last_state = pending
+                        last_heartbeat = time.monotonic()
                 await asyncio.sleep(poll_interval)
         finally:
             progress_store.pop(run_id, None)
